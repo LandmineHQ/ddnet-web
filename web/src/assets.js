@@ -477,6 +477,7 @@ export function createAssetManager(options = {}) {
         const expected = end - start + 1;
         const buffer = new Uint8Array(expected);
         let offset = 0;
+        let attemptBytes = 0;
         if (response.body && typeof response.body.getReader === 'function') {
           const reader = response.body.getReader();
           for (;;) {
@@ -489,6 +490,7 @@ export function createAssetManager(options = {}) {
               buffer.set(result.value, offset);
               offset += result.value.byteLength;
               if (onProgress) onProgress(result.value.byteLength);
+              attemptBytes += result.value.byteLength;
               stall = resetStall(stall, controller);
             }
           }
@@ -498,10 +500,12 @@ export function createAssetManager(options = {}) {
           buffer.set(bytes);
           offset = expected;
           if (onProgress) onProgress(expected);
+          attemptBytes = expected;
         }
         if (offset !== expected) throw new Error('range response ended early (' + offset + '/' + expected + ')');
         return buffer;
       } catch (error) {
+        if (attemptBytes && onProgress) onProgress(-attemptBytes);
         if (error && error.name === 'RangeUnsupportedError') throw error;
         if (signal && signal.aborted) throw abortedError();
         lastError = error;
@@ -594,7 +598,7 @@ export function createAssetManager(options = {}) {
         }
       };
       const progress = (bytes) => {
-        received += bytes;
+        received = Math.max(0, received + bytes);
         item.received = received;
         updateSpeed(item, received);
         const at = now();
