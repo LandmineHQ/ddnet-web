@@ -409,6 +409,8 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
 - 自签证书只适合内网测试：浏览器仍会校验证书；同源页面与 wss 同主机/端口且用户已接受例外时通常可复用，
   跨域名/端口需要单独信任。正式环境直接使用 nginx + 公网证书。
 - `deploy/README.md` 有启动参数、证书路径、防火墙和验证命令。
+- GitHub Pages 自定义域名 `ddnet.landmine.top` 下 wiki 使用 `/wiki/` base；无自定义域名的项目 Pages
+  需要设置仓库变量 `PAGES_BASE=/ddnet-web/wiki/`。
 
 ### 7.26 前端 relay master base
 - 默认是同源相对路径 `/relay-master/v1/serverlist`，不硬编码 `master.landmine.top`；

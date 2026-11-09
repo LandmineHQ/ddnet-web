@@ -75,9 +75,13 @@ jobs:
           PAGES_BASE: ${{ vars.PAGES_BASE }}
         run: |
           set -euo pipefail
-          base="${PAGES_BASE:-/${GITHUB_REPOSITORY#*/}/wiki/}"
+          # ddnet.landmine.top 是自定义域名，Pages 根路径为 /，wiki 在 /wiki/。
+          # 如果以后切换回 GitHub 项目 Pages（无自定义域名），设置仓库变量
+          # PAGES_BASE=/ddnet-web/wiki/ 即可。
+          base="${PAGES_BASE:-/wiki/}"
           DIST="$PWD/web-dist" VITEPRESS_BASE="$base" ./scripts/build-wiki.sh
           test -s web-dist/wiki/index.html
+          grep -q "href=\"/wiki/assets/" web-dist/wiki/index.html
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

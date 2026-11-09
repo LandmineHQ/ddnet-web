@@ -426,6 +426,9 @@ docker compose -f compose.test.yml --profile test run --rm -T \
 Settings → Pages → Source = GitHub Actions
 ```
 
+当前使用自定义域名 `ddnet.landmine.top`，VitePress base 为 `/wiki/`。如果以后切回 GitHub 项目 Pages
+（无自定义域名），设置仓库变量 `PAGES_BASE=/ddnet-web/wiki/`。
+
 ### GHCR（手动）
 
 [.github/workflows/publish-ghcr.yml](.github/workflows/publish-ghcr.yml) 需要 `run_id` + `version`：
