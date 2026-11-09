@@ -59,6 +59,7 @@
 | `compose.test.yml` | 测试栈（profiles）：`relay-unit` / `e2e-relay` / `e2e-web` / `syntax-check` / `slow:e2e-reconnect` / `fallback:e2e-rtc-fallback` / `local-server`（可选本地测试服） | 运维任务 |
 | `compose.yml` | 生产：Go relay + relay master（只绑 127.0.0.1:8390/8391；无 Caddy；TLS/WSS 由生产 nginx 终止，静态站点由 nginx root 到 `dist/web`） | 运维任务 |
 | `deploy/` | 生产 nginx 配置示例：TLS/WSS、静态站点、`/relay-master/*` 反代 | 运维任务 |
+| `.github/workflows/` | build（web/二进制/alpine 镜像）、pages（自动）、publish-ghcr/release（手动） | 运维任务 |
 | `build/compose.yml` | wasm 构建（emsdk 镜像，一次性服务） | 均可 |
 | `build/` | Docker 构建流水线 + 构建文档 | 构建任务 |
 | `dist/web/` | **部署产物**（wasm + 前端 + manifest.json） | 由 assemble 生成 |
@@ -172,6 +173,10 @@
 
     # 慢速：断开等后端空闲超时（60s）再重连同一服务器（验证死连接重开）
     docker compose -f compose.test.yml --profile slow run --rm e2e-reconnect
+
+    # CI：build.yml 自动构建 web/linux 二进制/alpine 镜像；pages.yml 自动发布 Pages；
+    # publish-ghcr.yml / publish-release.yml 需要 build.yml 的 run_id 手动触发。
+    # 只构建 linux/amd64（Alpine 兼容），不生成其他平台。
 
 判定"进游戏成功"：引擎日志出现 `client: connected, sending info`
 （`client: using 0.7 (sixup) protocol` 表示走了 0.7）；`/api/stats` 的 targets 可见收发字节。
@@ -470,6 +475,8 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
     relay-go/internal/ssrf/ relay-go/internal/config/       # 安全策略 / 配置
     web/app.js web/src/master.js web/src/ime.js web/src/device.js web/src/connect.js web/src/shortcuts.js
     web/src/latency.js web/src/relayurl.js web/src/probe.js
+    .github/workflows/build.yml .github/workflows/pages.yml
+    .github/workflows/publish-ghcr.yml .github/workflows/publish-release.yml
     compose.dev.yml compose.test.yml compose.yml deploy/nginx.conf
     scripts/dev-up.sh scripts/dev-down.sh scripts/assemble-web.sh
     tests/e2e/ux_flow.mjs tests/e2e/relay_join.mjs tests/e2e/mobile_mode.mjs

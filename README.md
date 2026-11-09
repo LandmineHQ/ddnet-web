@@ -391,6 +391,76 @@ docker compose -f compose.test.yml --profile test run --rm -T \
 
 覆盖：资源下载、后端选择、服务器列表、进游戏、聚光灯、移动端、桌面触控 PC、IME/剪贴板、WebRTC 传输、relay master 发现。
 
+## 🔁 CI / Publishing
+
+只构建 **linux/amd64**（Alpine 兼容），不生成 Windows/macOS/ARM 产物。
+
+### 自动 build
+
+[.github/workflows/build.yml](.github/workflows/build.yml) 在 push `main`/`master` 或手动触发时：
+
+- 构建 DDNet WASM + web shell → artifact `web-dist`
+- 构建 `relay-linux-amd64` / `relay-master-linux-amd64` → 两个二进制 artifact
+- 构建 `alpine:3.20` 的 relay / relay-master 镜像，并导出 `relay-image` / `relay-master-image`
+- 对两个镜像做真实 `/healthz` 冒烟
+
+### GitHub Pages（自动）
+
+[.github/workflows/pages.yml](.github/workflows/pages.yml) 在 build 成功后自动：
+
+- 从对应 build run 下载 `web-dist`
+- 发布到 GitHub Pages
+
+仓库设置：
+
+```text
+Settings → Pages → Source = GitHub Actions
+```
+
+### GHCR（手动）
+
+[.github/workflows/publish-ghcr.yml](.github/workflows/publish-ghcr.yml) 需要 `run_id` + `version`：
+
+```bash
+gh workflow run publish-ghcr.yml \
+  -f run_id=<build-run-id> \
+  -f version=v0.1.0 \
+  -f also_latest=true
+```
+
+镜像：
+
+```text
+ghcr.io/<owner>/<repo>-relay:<version>
+ghcr.io/<owner>/<repo>-master:<version>
+```
+
+### GitHub Release（手动）
+
+[.github/workflows/publish-release.yml](.github/workflows/publish-release.yml) 需要 `run_id` + `version`：
+
+```bash
+gh workflow run publish-release.yml \
+  -f run_id=<build-run-id> \
+  -f version=v0.1.0 \
+  -f draft=true
+```
+
+Release 资产：
+
+```text
+relay-linux-amd64
+relay-master-linux-amd64
+ddnet-web-dist.tar.gz
+SHA256SUMS
+```
+
+获取 build run id：
+
+```bash
+gh run list --workflow=build.yml --limit 10
+```
+
 ### 当前验证结果
 
 | 项目 | 结果 |
@@ -411,6 +481,7 @@ docker compose -f compose.test.yml --profile test run --rm -T \
 ## 📁 Project Layout
 
 ```text
+.github/workflows/     build / pages / publish-ghcr / publish-release
 web/                   前端 Shell（原生 ESM）+ Node 测试 + wasm 资源缓存
 relay-go/              Go relay + relay master + WebRTC/WS/UDP + vendor
 relay/                 旧 Node 中继参考实现（不参与生产）

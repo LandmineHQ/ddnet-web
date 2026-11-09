@@ -1,0 +1,179 @@
+name: publish-release
+
+# 手动把指定 build run 的 linux/amd64 二进制和 web 包发布到 GitHub Release。
+# 镜像请使用 publish-ghcr.yml；Pages 由 pages.yml 自动发布。
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "build workflow run id（提供 web-dist / 两个二进制 artifacts）"
+        required: true
+        type: string
+      version:
+        description: "Release tag/version（如 v0.1.0）"
+        required: true
+        type: string
+      prerelease:
+        description: "标记为 pre-release"
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: "创建为 draft"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create / update GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Validate version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::invalid version '$VERSION', e.g. v0.1.0"
+            exit 1
+          fi
+
+      - name: Download relay binary
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-linux-amd64
+          path: assets/bin
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download relay-master binary
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-master-linux-amd64
+          path: assets/bin
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download web-dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: assets/web-dist
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets/out
+          cp assets/bin/relay-linux-amd64 assets/out/relay-linux-amd64
+          cp assets/bin/relay-master-linux-amd64 assets/out/relay-master-linux-amd64
+          chmod +x assets/out/relay-linux-amd64 assets/out/relay-master-linux-amd64
+          tar -C assets/web-dist -czf assets/out/ddnet-web-dist.tar.gz .
+          (cd assets/out && sha256sum relay-linux-amd64 relay-master-linux-amd64 ddnet-web-dist.tar.gz > SHA256SUMS)
+          ls -lh assets/out
+
+      - name: Get build run commit
+        id: run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq .head_sha)
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release body
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          RUN_ID: ${{ inputs.run_id }}
+          RUN_SHA: ${{ steps.run.outputs.sha }}
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}"
+          cat > release-body.md <<EOF
+          ## DDNet Web build
+
+          - build run: \`${RUN_ID}\`
+          - commit: \`${RUN_SHA}\`
+          - web: \`ddnet-web-dist.tar.gz\`
+          - binaries: Linux \`amd64\` static, Alpine compatible
+
+          ## Downloads
+
+          | Artifact | Download |
+          | --- | --- |
+          | relay (linux/amd64) | [relay-linux-amd64](${BASE}/relay-linux-amd64) |
+          | relay-master (linux/amd64) | [relay-master-linux-amd64](${BASE}/relay-master-linux-amd64) |
+          | web static bundle | [ddnet-web-dist.tar.gz](${BASE}/ddnet-web-dist.tar.gz) |
+          | checksums | [SHA256SUMS](${BASE}/SHA256SUMS) |
+
+          ## Notes
+
+          - 二进制是 \`CGO_ENABLED=0\` 的静态 linux/amd64 构建，可直接放入 Alpine 容器。
+          - Docker 镜像（\`alpine:3.20\`）请使用 \`publish-ghcr\` workflow 发布。
+          - GitHub Pages 由 \`pages\` workflow 自动发布。
+          EOF
+          cat release-body.md
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          RUN_SHA: ${{ steps.run.outputs.sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euxo pipefail
+          if gh release view "$VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$VERSION" assets/out/* --clobber --repo "$GH_REPO"
+            gh release edit "$VERSION" --notes-file release-body.md --repo "$GH_REPO"
+            echo "Existing release updated."
+          else
+            args=(--repo "$GH_REPO" --title "$VERSION" --notes-file release-body.md)
+            # 如果 tag 已存在，使用 --verify-tag；否则把 release 指向本次 build 的 commit。
+            if gh api "repos/${GH_REPO}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
+              args+=(--verify-tag)
+            else
+              args+=(--target "$RUN_SHA")
+            fi
+            [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
+            [[ "$DRAFT" == "true" ]] && args+=(--draft)
+            gh release create "$VERSION" "${args[@]}" assets/out/*
+          fi
+
+      - name: Summary
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          RUN_ID: ${{ inputs.run_id }}
+          RUN_SHA: ${{ steps.run.outputs.sha }}
+        run: |
+          {
+            echo "### Release published"
+            echo ""
+            echo "- version: \`${VERSION}\`"
+            echo "- build run: \`${RUN_ID}\`"
+            echo "- commit: \`${RUN_SHA}\`"
+            echo "- page: https://github.com/${{ github.repository }}/releases/tag/${VERSION}"
+            echo "- assets:"
+            echo '```'
+            ls -1 assets/out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

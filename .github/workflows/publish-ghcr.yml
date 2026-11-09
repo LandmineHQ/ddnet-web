@@ -1,0 +1,108 @@
+name: publish-ghcr
+
+# 手动发布 alpine 镜像到 GHCR。
+# 先用 build.yml 构建，再把该 run 的 run_id 填进来。
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "build workflow run id（提供 relay-image / relay-master-image artifacts）"
+        required: true
+        type: string
+      version:
+        description: "镜像 tag（如 v0.1.0）"
+        required: true
+        type: string
+      also_latest:
+        description: "同时推送 :latest"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+concurrency:
+  group: publish-ghcr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Push relay + relay-master images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::invalid version '$VERSION' (Docker tag rules: letters/digits/._-), e.g. v0.1.0"
+            exit 1
+          fi
+
+      - name: Download relay image
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-image
+          path: images/relay
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download relay-master image
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-master-image
+          path: images/master
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load images
+        shell: bash
+        run: |
+          set -euo pipefail
+          gunzip -c images/relay/relay-image.tar.gz | docker load
+          gunzip -c images/master/relay-master-image.tar.gz | docker load
+          docker image inspect ddnet-relay:ci ddnet-relay-master:ci >/dev/null
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          ALSO_LATEST: ${{ inputs.also_latest }}
+        run: |
+          set -euo pipefail
+          repo=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          relay="ghcr.io/${repo}-relay"
+          master="ghcr.io/${repo}-master"
+          docker tag ddnet-relay:ci "${relay}:${VERSION}"
+          docker tag ddnet-relay-master:ci "${master}:${VERSION}"
+          if [[ "$ALSO_LATEST" == "true" ]]; then
+            docker tag ddnet-relay:ci "${relay}:latest"
+            docker tag ddnet-relay-master:ci "${master}:latest"
+          fi
+          docker push "${relay}:${VERSION}"
+          docker push "${master}:${VERSION}"
+          if [[ "$ALSO_LATEST" == "true" ]]; then
+            docker push "${relay}:latest"
+            docker push "${master}:latest"
+          fi
+          {
+            echo "### GHCR images published"
+            echo ""
+            echo "- run: \`${{ inputs.run_id }}\`"
+            echo "- version: \`${VERSION}\`"
+            echo "- \`${relay}:${VERSION}\`"
+            echo "- \`${master}:${VERSION}\`"
+            echo "- also_latest: \`${ALSO_LATEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,250 @@
+name: build
+
+# 自动构建（push main/master 或手动触发）：
+#   - DDNet WebAssembly + web shell（web-dist）
+#   - relay / relay-master 的 linux/amd64 静态二进制
+#   - relay / relay-master 的 alpine 精简镜像（导出为 docker save tar.gz）
+#
+# 发布：
+#   - GitHub Pages 由 pages.yml 在这个 workflow 成功后自动发布
+#   - GHCR / GitHub Release 需要手动运行 publish-ghcr.yml / publish-release.yml，
+#     并使用本次 run 的 run_id 下载对应 artifacts。
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.24.x"
+
+jobs:
+  web:
+    name: Build web (wasm + shell)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned DDNet + apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub 不保证能按裸 SHA fetch 任意历史提交；使用 filtered clone 后
+          # checkout 固定 baseline（a02cf38）。
+          git clone --filter=blob:none --no-checkout https://github.com/ddnet/ddnet.git ddnet-dev
+          git -C ddnet-dev checkout --detach a02cf38
+          git -C ddnet-dev submodule update --init --depth 1 ddnet-libs
+          git -C ddnet-dev apply "$GITHUB_WORKSPACE/patches/ddnet-web-client.patch"
+          git -C ddnet-dev diff --stat | head -20
+
+      - name: Build WASM
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ github.workspace }}/ddnet-dev
+          BUILD_DIR: ${{ github.workspace }}/build/wasm-build-ci
+          DIST_DIR: ${{ github.workspace }}/dist/web
+          CARGO_HOME_HOST: ${{ github.workspace }}/build/cargo-home
+          LOG_DIR: ${{ github.workspace }}/build/logs
+          BUILD_TYPE: Release
+          JOBS: "2"
+          PACKAGE: "0"
+          CCACHE: "0"
+        run: |
+          set -euo pipefail
+          ./build/build-wasm.sh
+
+      - name: Assemble web shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE" DIST="$GITHUB_WORKSPACE/dist/web" ./scripts/assemble-web.sh
+          test -s dist/web/manifest.json
+          test -s dist/web/DDNet.wasm
+          du -sh dist/web
+
+      - name: Upload wasm build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-build-log
+          path: build/logs/latest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload web-dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist/web
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Web build"
+            echo ""
+            echo "- commit: \`$GITHUB_SHA\`"
+            echo "- artifact: \`web-dist\`"
+            echo "- size: $(du -sh dist/web | cut -f1)"
+            echo "- manifest: $(python3 -c 'import json; d=json.load(open("dist/web/manifest.json")); print(d["version"])')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  binaries:
+    name: Build linux/amd64 binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: relay-go/go.mod
+          cache-dependency-path: relay-go/go.sum
+
+      - name: Test and build
+        working-directory: relay-go
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -mod=vendor ./...
+          mkdir -p "$GITHUB_WORKSPACE/dist/bin"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -mod=vendor -trimpath -ldflags="-s -w" \
+            -o "$GITHUB_WORKSPACE/dist/bin/relay-linux-amd64" ./cmd/relay
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -mod=vendor -trimpath -ldflags="-s -w" \
+            -o "$GITHUB_WORKSPACE/dist/bin/relay-master-linux-amd64" ./cmd/master
+          file "$GITHUB_WORKSPACE/dist/bin/relay-linux-amd64" "$GITHUB_WORKSPACE/dist/bin/relay-master-linux-amd64"
+          ls -lh "$GITHUB_WORKSPACE/dist/bin"
+
+      - name: Upload relay binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-linux-amd64
+          path: dist/bin/relay-linux-amd64
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload relay-master binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-master-linux-amd64
+          path: dist/bin/relay-master-linux-amd64
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Linux x64 binaries"
+            echo ""
+            echo '- `relay-linux-amd64`'
+            echo '- `relay-master-linux-amd64`'
+            echo ''
+            echo '```'
+            ls -lh dist/bin
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    name: Build alpine images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build relay image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg BUILDER_IMAGE=golang:1.24-alpine \
+            --build-arg RUNTIME_IMAGE=alpine:3.20 \
+            -f relay-go/Dockerfile -t ddnet-relay:ci relay-go
+
+      - name: Build master image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg BUILDER_IMAGE=golang:1.24-alpine \
+            --build-arg RUNTIME_IMAGE=alpine:3.20 \
+            -f relay-go/Dockerfile.master -t ddnet-relay-master:ci relay-go
+
+      - name: Smoke test images
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker rm -f ddnet-relay-ci ddnet-relay-master-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name ddnet-relay-ci -p 18390:8390 \
+            -e RELAY_ALLOW_NO_ORIGIN=true -e RELAY_MASTER_ENABLED=false ddnet-relay:ci
+          docker run -d --name ddnet-relay-master-ci -p 18391:8391 ddnet-relay-master:ci
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS -m 3 http://127.0.0.1:18390/healthz >/dev/null 2>&1 \
+              && curl -fsS -m 3 http://127.0.0.1:18391/healthz >/dev/null 2>&1; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          test "$ok" = 1
+          curl -fsS http://127.0.0.1:18390/healthz
+          curl -fsS http://127.0.0.1:18391/healthz
+          echo "container smoke PASS"
+
+      - name: Export images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/images
+          docker save ddnet-relay:ci | gzip -9 > dist/images/relay-image.tar.gz
+          docker save ddnet-relay-master:ci | gzip -9 > dist/images/relay-master-image.tar.gz
+          ls -lh dist/images
+
+      - name: Upload relay image
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-image
+          path: dist/images/relay-image.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload relay-master image
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-master-image
+          path: dist/images/relay-master-image.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Alpine images"
+            echo ""
+            echo "- base runtime: \`alpine:3.20\` (linux/amd64)"
+            echo "- relay: \`ddnet-relay:ci\`"
+            echo "- relay-master: \`ddnet-relay-master:ci\`"
+            echo ""
+            echo '```'
+            docker image ls ddnet-relay:ci ddnet-relay-master:ci
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
