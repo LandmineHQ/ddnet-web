@@ -686,8 +686,11 @@ export function createAssetManager(options = {}) {
               phase = 'done';
             }
           } else {
+            // This attempt did not improve throughput. Revert to the last
+            // good concurrency, measure a fresh baseline, and probe again
+            // later instead of permanently stopping the ramp.
             target = probeFromTarget;
-            phase = 'done';
+            phase = 'baseline';
           }
         }
         lastProbeAt = at;
