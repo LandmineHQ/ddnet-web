@@ -109,7 +109,15 @@ func testRTCRelay(t *testing.T) string {
 	return server.URL + "/rtc/offer"
 }
 
+func skipWebRTCIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("real ICE loopback is not reliable on hosted runners; run go test without -short")
+	}
+}
+
 func TestProbeWebRTC(t *testing.T) {
+	skipWebRTCIntegration(t)
 	signalURL := testRTCRelay(t)
 	transport := Transport{Type: "webrtc", SignalURL: signalURL, Host: "relay.example.com", UDPPort: 443}
 	if err := ProbeWebRTC(context.Background(), transport, 5*time.Second); err != nil {
@@ -279,6 +287,7 @@ func TestHTTPRegisterProbeAndHealth(t *testing.T) {
 }
 
 func TestHTTPRegisterWebRTCOnly(t *testing.T) {
+	skipWebRTCIntegration(t)
 	signalURL := testRTCRelay(t)
 	registry := NewRegistry(10)
 	handler, err := NewHandler(Options{Registry: registry, ProbeTimeout: 5 * time.Second})

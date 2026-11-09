@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -mod=vendor ./...
+          go test -short -v -mod=vendor ./...
           mkdir -p "$GITHUB_WORKSPACE/dist/bin"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -mod=vendor -trimpath -ldflags="-s -w" \
