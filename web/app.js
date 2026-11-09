@@ -499,7 +499,7 @@ function bindEvents() {
     S.pointerLocked = locked;
     document.body.classList.toggle('is-pointer-locked', locked);
     if (S.view === 'game') {
-      if (S.device && S.device.kind === 'desktop') document.body.classList.toggle('is-menu-open', !locked);
+      if (S.device && S.device.kind === 'desktop') setMenuOpen(!locked);
       // ESC 会由浏览器强制解除 Pointer Lock；把键盘焦点留在画布上，
       // 避免焦点落到 HUD/按钮后键盘输入与渲染节奏异常。
       try { R.canvas.focus({ preventScroll: true }); } catch (error) { /* 忽略 */ }
@@ -539,14 +539,14 @@ function bindEvents() {
     S.mouse.clientX = event.clientX;
     S.mouse.clientY = event.clientY;
     S.mouse.has = true;
-    if (S.view === 'game' && document.pointerLockElement !== R.canvas) {
+    if (S.view === 'game' && S.menuOpen && document.pointerLockElement !== R.canvas) {
       scheduleUiMouseSync();
     }
   }, true);
   R.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   // 浏览器在 ESC 时会强制释放 Pointer Lock（无法拦截）。游戏内再次点击画布时恢复捕获；
   // 菜单/游戏内光标由 DDNet 自己绘制，因此不会出现浏览器光标。
-  R.canvas.addEventListener('click', () => {
+  function requestGamePointerLock() {
     if (S.view !== 'game' || document.pointerLockElement === R.canvas) return;
     try {
       const request = R.canvas.requestPointerLock && R.canvas.requestPointerLock();
@@ -554,6 +554,33 @@ function bindEvents() {
     } catch (error) {
       // 浏览器可能要求用户手势；忽略，下次点击再试
     }
+  }
+
+  R.canvas.addEventListener('click', () => {
+    if (S.view !== 'game' || document.pointerLockElement === R.canvas) return;
+    if (!S.menuOpen) {
+      requestGamePointerLock();
+      return;
+    }
+    // 菜单/设置是 wasm 画布内绘制，点击菜单项同样会冒泡到 canvas。
+    // 菜单打开时不要立即重新锁定；等这次点击触发的菜单动作完成，
+    // 只有菜单确实关闭（如点击 Play/Resume）才恢复 Pointer Lock。
+    setTimeout(() => {
+      if (S.view !== 'game' || document.pointerLockElement === R.canvas) return;
+      const Module = S.runtime && S.runtime.Module;
+      let open = S.menuOpen;
+      if (Module && typeof Module.ccall === 'function') {
+        try {
+          open = Module.ccall('DDWeb_IsMenuOpen', 'number', [], []) === 1;
+        } catch (error) {
+          // 旧 wasm：保留当前状态
+        }
+      }
+      if (!open) {
+        setMenuOpen(false);
+        requestGamePointerLock();
+      }
+    }, 120);
   });
   window.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason;
@@ -1962,12 +1989,18 @@ function startMenuPoll() {
     if (!Module || typeof Module.ccall !== 'function') return;
     try {
       const isDesktop = S.device && S.device.kind === 'desktop';
-      const open = isDesktop && Module.ccall('DDWeb_IsMenuOpen', 'number', [], []) === 1;
-      document.body.classList.toggle('is-menu-open', open);
+      setMenuOpen(isDesktop && Module.ccall('DDWeb_IsMenuOpen', 'number', [], []) === 1);
     } catch (error) {
       // 旧 wasm 没有导出
     }
-  }, 200);
+  }, 500);
+}
+
+function setMenuOpen(open) {
+  const value = open === true;
+  if (S.menuOpen === value) return;
+  S.menuOpen = value;
+  document.body.classList.toggle('is-menu-open', value);
 }
 
 function stopMenuPoll() {
@@ -1975,6 +2008,7 @@ function stopMenuPoll() {
     clearInterval(S.menuTimer);
     S.menuTimer = null;
   }
+  S.menuOpen = false;
   document.body.classList.remove('is-menu-open');
 }
 
@@ -2016,7 +2050,8 @@ function setView(name) {
   if (name !== 'relays' && S.download.done) setHidden(R.widget, true);
   document.body.classList.toggle('in-game', inGame);
   if (!inGame) {
-    document.body.classList.remove('is-scoreboard-open', 'is-menu-open');
+    setMenuOpen(false);
+    document.body.classList.remove('is-scoreboard-open');
   }
   if (!inGame && S.ime) S.ime.setActive(false);
   setHidden(R.viewRelays, name !== 'relays');
