@@ -16,6 +16,40 @@
       document.documentElement.setAttribute('data-theme', 'light');
     }
   </script>
+
+  <script>
+    // GitHub Pages 等静态托管无法设置 COOP/COEP；首次访问注册 COI
+    // service worker，由它给导航响应补头，然后自动重载一次。
+    (function ensureCrossOriginIsolation() {
+      if (window.crossOriginIsolated) return;
+      if (!('serviceWorker' in navigator)) return;
+      var key = 'ddweb.coi-reload.v1';
+      var reloaded = false;
+      function reloadOnce() {
+        if (reloaded) return;
+        try {
+          if (sessionStorage.getItem(key)) return;
+          sessionStorage.setItem(key, '1');
+        } catch (error) {
+          // 无 sessionStorage 时仍允许一次重载
+        }
+        reloaded = true;
+        location.reload();
+      }
+      navigator.serviceWorker.register('./coi-serviceworker.js', { scope: './' }).then(function () {
+        if (navigator.serviceWorker.controller) {
+          reloadOnce();
+          return;
+        }
+        navigator.serviceWorker.addEventListener('controllerchange', reloadOnce, { once: true });
+        navigator.serviceWorker.ready.then(function () {
+          if (navigator.serviceWorker.controller) reloadOnce();
+        });
+      }).catch(function () {
+        // 由页面自检报告缺少 COOP/COEP
+      });
+    })();
+  </script>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>

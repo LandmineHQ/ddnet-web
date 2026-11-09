@@ -180,6 +180,16 @@ scripts/assemble-web.sh                # 组装前端 + manifest.json + wiki
 
 `build-wasm.sh` 默认源码路径是本地 `ddnet-dev/`；上游基线 `ddnet/` 和 worktree `ddnet-dev/` 不纳入本仓库，补丁见 [patches/ddnet-web-client.patch](patches/ddnet-web-client.patch)。
 
+### GitHub Pages 的 COOP/COEP
+
+GitHub Pages 不支持自定义响应头，`_headers` 不会生效。站点内置 `coi-serviceworker.js`：
+
+- 首次访问注册 Service Worker
+- 给导航响应补上 COOP/COEP
+- 自动重载一次，之后 `crossOriginIsolated = true`
+
+因此 **首次打开可能会自动刷新一次**，这是预期行为。生产 nginx 仍应直接返回 COOP/COEP，不依赖 Service Worker。
+
 ### First Start
 
 - **开发**：`./scripts/dev-up.sh` 会等待健康检查；master 列表：

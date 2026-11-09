@@ -316,3 +316,15 @@
 `<meta name="asset-mirror-bases">` 指定的镜像。默认使用 gh-proxy 代理 GitHub Release 的独立
 `DDNet.js` / `DDNet.wasm` / `DDNet.data` / `manifest.json` 资产。每个候选都必须通过 manifest 的
 大小和 sha256 校验后才会缓存。
+
+## GitHub Pages COOP/COEP
+
+GitHub Pages 不支持自定义响应头。`coi-serviceworker.js` 会在首次访问时注册并自动重载一次，
+给导航响应补上：
+
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+之后 `SharedArrayBuffer` 才可用。生产 nginx 应直接返回这两个头，不依赖 Service Worker。

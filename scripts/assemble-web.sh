@@ -14,7 +14,7 @@ WEB="${WEB:-$ROOT/web}"
 mkdir -p "$DIST"
 
 echo "== copying frontend shell from $WEB"
-for item in index.html style.css app.js src assets serve.mjs README.md; do
+for item in index.html style.css app.js src assets serve.mjs README.md coi-serviceworker.js; do
 	if [ -e "$WEB/$item" ]; then
 		rm -rf "${DIST:?}/$item"
 		cp -a "$WEB/$item" "$DIST/$item"

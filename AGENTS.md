@@ -205,6 +205,8 @@
 
 ### 7.2 浏览器安全上下文：SharedArrayBuffer 需要 https 或 localhost
 - 站点必须同时发 `Cross-Origin-Opener-Policy: same-origin` 与 `Cross-Origin-Embedder-Policy: require-corp`；
+- GitHub Pages 无法设置自定义头，因此 `web/coi-serviceworker.js` 首次注册后自动重载并给导航响应补头；
+  这是一次性 workaround，生产 nginx 仍必须直接发头。
 - `http://192.168.x.x` **不是**安全上下文，会白屏报 `SharedArrayBuffer transfer requires self.crossOriginIsolated`；
 - https 页面里的后端必须是 `wss://`（混合内容会被拦），http(localhost) 页面可用 `ws://`。
 
