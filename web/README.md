@@ -312,6 +312,6 @@
 
 ## 资源并行下载
 
-`src/assets.js` 先探测同源 URL 的 Range 支持；支持时按块下载，并从 1 个并发逐步增加到最多 4 个，
+`src/assets.js` 先探测同源 URL 的 Range 支持；支持时按块下载，先从 1 个快速提升到 8 个，之后只在总吞吐继续提升时逐个增加（默认最多 16 个），
 所有块按 offset 写入同一个缓冲区。服务器不支持 Range 时回退单流下载。最终仍做 size + sha256 校验
 后才写入 Cache Storage。不需要 gh-proxy。

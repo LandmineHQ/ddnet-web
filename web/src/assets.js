@@ -108,8 +108,12 @@ export function createAssetManager(options = {}) {
   const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : () => {};
   const startupTimeoutMs = Number.isFinite(options.startupTimeoutMs) ? options.startupTimeoutMs : 5000;
   const stallTimeoutMs = Number.isFinite(options.stallTimeoutMs) ? options.stallTimeoutMs : 15000;
-  const rampIntervalMs = Number.isFinite(options.rampIntervalMs) ? options.rampIntervalMs : 1200;
-  const maxParallelOption = Number.isFinite(options.maxParallel) ? options.maxParallel : 4;
+  const rampIntervalMs = Number.isFinite(options.rampIntervalMs) ? options.rampIntervalMs : 300;
+  const probeIntervalMs = Number.isFinite(options.probeIntervalMs) ? options.probeIntervalMs : 1500;
+  const minParallelOption = Number.isFinite(options.minParallel) ? options.minParallel : 8;
+  const maxParallelOption = Number.isFinite(options.maxParallel) ? options.maxParallel : 16;
+  const speedGainThreshold = Number.isFinite(options.speedGainThreshold) && options.speedGainThreshold > 0
+    ? options.speedGainThreshold : 1.02;
   const manifestTimeoutMs = Number.isFinite(options.manifestTimeoutMs) ? options.manifestTimeoutMs : 5000;
 
   const state = {
@@ -562,14 +566,19 @@ export function createAssetManager(options = {}) {
       }
       if (probe.body && probe.body.cancel) probe.body.cancel();
 
-      const hardware = (typeof navigator !== 'undefined' && Number(navigator.hardwareConcurrency)) || 2;
-      const requested = Number(maxParallelOption);
+      const requestedMax = Number(maxParallelOption);
       const maxParallel = Math.max(1, Math.min(
-        Number.isFinite(requested) && requested > 0 ? requested : 4,
-        Math.max(1, Math.min(4, hardware))
+        Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : 16,
+        16
       ));
+      const requestedMin = Number(minParallelOption);
+      const minParallel = Math.max(1, Math.min(
+        maxParallel,
+        Number.isFinite(requestedMin) && requestedMin > 0 ? requestedMin : 8
+      ));
+      // More chunks than workers so the ramp has room to expand.
       const chunkSize = Math.max(
-        512 * 1024,
+        256 * 1024,
         Math.min(4 * 1024 * 1024, Math.ceil(total / (maxParallel * 3)))
       );
       const chunkCount = Math.ceil(total / chunkSize);
@@ -583,6 +592,11 @@ export function createAssetManager(options = {}) {
       let target = 1;
       let received = 0;
       let lastEmitAt = 0;
+      let lastProbeAt = 0;
+      let lastProbeBytes = 0;
+      let baselineSpeed = 0;
+      let probeFromTarget = 0;
+      let phase = 'ramp';
       let settled = false;
       let resolveDone;
       let rejectDone;
@@ -636,7 +650,48 @@ export function createAssetManager(options = {}) {
       };
       const ramp = setInterval(() => {
         if (settled) return;
-        if (target < maxParallel) target += 1;
+        if (target < minParallel) {
+          target += 1;
+          spawn();
+          return;
+        }
+        const at = Date.now();
+        if (phase === 'ramp') {
+          phase = 'baseline';
+          lastProbeAt = at;
+          lastProbeBytes = received;
+          return;
+        }
+        if (phase === 'done') return;
+        const elapsed = at - lastProbeAt;
+        if (elapsed < probeIntervalMs) return;
+        const speed = (received - lastProbeBytes) * 1000 / elapsed;
+        if (phase === 'baseline') {
+          baselineSpeed = speed;
+          if (target >= maxParallel) {
+            phase = 'done';
+            return;
+          }
+          probeFromTarget = target;
+          target += 1;
+          phase = 'probing';
+        } else if (phase === 'probing') {
+          // Only add another worker if total throughput actually improved.
+          if (speed > baselineSpeed * speedGainThreshold) {
+            baselineSpeed = speed;
+            if (target < maxParallel) {
+              probeFromTarget = target;
+              target += 1;
+            } else {
+              phase = 'done';
+            }
+          } else {
+            target = probeFromTarget;
+            phase = 'done';
+          }
+        }
+        lastProbeAt = at;
+        lastProbeBytes = received;
         spawn();
       }, rampIntervalMs);
       spawn();

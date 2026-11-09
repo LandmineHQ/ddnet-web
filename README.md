@@ -60,7 +60,7 @@
 ### 前端与运维
 
 - **零构建前端**：原生 ESM，HTML/CSS/JS 直接部署；资源下载带 sha256 校验与 Cache Storage。
-- **并行资源下载**：HTTP Range 分块，从 1 个并发逐步增加到最多 4 个；不支持 Range 时回退单流，最终仍校验 size + sha256。
+- **并行资源下载**：HTTP Range 分块，先快速提升到 8 个并发，之后只在总吞吐继续提升时逐个增加（最多 16 个）；不支持 Range 时回退单流，最终仍校验 size + sha256。
 - **默认 master 域名**：前端默认请求 `https://master.landmine.top/v1/serverlist`；本地开发用本机 `8391`，LAN HTTPS dev 走同源 `/relay-master`，也可用 meta/window/query 覆盖。
 - **可观测性**：`/api/info`、`/api/stats`、`/healthz`、master `/api/stats`，HUD 显示 WebRTC/WS 传输方式和流量。
 - **生产部署无 Caddy**：`compose.yml` 只启动 Go relay + relay master（回环端口），TLS/WSS/静态站点由 nginx 终止。
@@ -360,7 +360,8 @@ flowchart LR
 `DDNet.data` / `DDNet.wasm` 使用 HTTP Range 分块下载：
 
 - 先探测服务器是否支持 `206 Content-Range`
-- 从 **1 个 worker** 开始，按速度逐步增加到最多 4 个并发
+- 从 **1 个 worker** 起步，快速提升到 **8 个并发**
+- 8 个之后每次只增加一个 worker；增加后总速度必须继续提升，否则停止增加（默认上限 16）
 - 不支持 Range 或分块失败时自动回退单流下载
 - 最终仍按 manifest 的 size + sha256 校验，再写入 Cache Storage
 

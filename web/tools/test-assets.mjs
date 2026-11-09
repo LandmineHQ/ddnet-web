@@ -345,7 +345,7 @@ await test('Range 分块下载从 1 并发逐步增加并校验', async () => {
   const contents = {
     'DDNet.js': new TextEncoder().encode('small-js'),
     'DDNet.wasm': new TextEncoder().encode('small-wasm'),
-    'DDNet.data': new Uint8Array(2 * 1024 * 1024 + 123),
+    'DDNet.data': new Uint8Array(8 * 1024 * 1024 + 123),
   };
   for (let i = 0; i < contents['DDNet.data'].length; i += 1) contents['DDNet.data'][i] = i % 251;
   const files = {};
@@ -391,8 +391,10 @@ await test('Range 分块下载从 1 并发逐步增加并校验', async () => {
     cacheStorage: createMemoryCaches(),
     cryptoImpl: globalThis.crypto,
     progressIntervalMs: 0,
-    maxParallel: 3,
+    maxParallel: 16,
+    minParallel: 8,
     rampIntervalMs: 10,
+    probeIntervalMs: 30,
     startupTimeoutMs: 2000,
     stallTimeoutMs: 2000,
   });
@@ -400,7 +402,7 @@ await test('Range 分块下载从 1 并发逐步增加并校验', async () => {
   const result = await manager.download();
   assert.equal(result.ok, true, JSON.stringify(result.snapshot.lastError));
   assert.ok(rangeCalls.length >= 2, 'expected multiple range requests');
-  assert.ok(peak >= 2, 'expected concurrency to ramp above one, peak=' + peak);
+  assert.ok(peak >= 8, 'expected at least 8 concurrent range workers, peak=' + peak);
   assert.equal(manager.isComplete(), true);
 });
 

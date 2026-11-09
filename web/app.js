@@ -253,6 +253,8 @@ const S = {
   immersive: null,
   touch: { guideDismissed: false, hintDismissed: false },
   mouse: { clientX: 0, clientY: 0, has: false, pending: false },
+  pointerLocked: false,
+  menuOpen: false,
   menuTimer: null,
   confirmResolve: null,
   hud: { visible: false, timer: null, busy: false, relay: null, target: null, serverName: '' },
