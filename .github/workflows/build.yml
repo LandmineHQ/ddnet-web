@@ -245,6 +245,7 @@ jobs:
             echo "- relay-master: \`ddnet-relay-master:ci\`"
             echo ""
             echo '```'
-            docker image ls ddnet-relay:ci ddnet-relay-master:ci
+            docker image ls ddnet-relay:ci
+            docker image ls ddnet-relay-master:ci
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

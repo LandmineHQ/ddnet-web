@@ -4,7 +4,14 @@
 /ddnet-libs-tmp/
 
 # Generated build/deploy artifacts
-/build/
+# Build scripts are tracked; these are generated build directories.
+/build/emsdk/
+/build/emsdk-official/
+/build/wasm-build/
+/build/wasm-build-lead/
+/build/wasm-build-release/
+/build/cargo-home/
+/build/logs/
 /dist/
 /web/tools/screenshots/
 /tests/out/

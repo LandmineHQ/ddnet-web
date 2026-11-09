@@ -1,0 +1,51 @@
+# Docker Compose: WASM（Emscripten）构建（一次性 build 服务，跑完即退出）
+#
+#   docker compose -f build/compose.yml run --rm wasm-build
+#   BUILD_TYPE=Release docker compose -f build/compose.yml run --rm wasm-build
+#   CLEAN=1 docker compose -f build/compose.yml run --rm wasm-build
+#   docker compose -f build/compose.yml build          # 只构建 builder 镜像（已存在则跳过）
+#   docker compose -f build/compose.yml logs ...       # 构建输出
+#
+# 说明：
+#   * 使用本地镜像 ddnet-wasm-builder:emsdk-4.0.22（官方 emscripten/emsdk:4.0.22 + cmake/rust）。
+#     镜像不存在时可用 `docker compose -f build/compose.yml build` 从 ./Dockerfile 构建；
+#     Docker Hub 直连不可达时先 `docker pull dockerproxy.net/emscripten/emsdk:4.0.22`
+#     再 `docker tag ... emscripten/emsdk:4.0.22`（见 build/README.md）。
+#   * 容器内执行 scripts/wasm-build-compose.sh —— build/build-wasm.sh 内层构建逻辑的 compose 版；
+#     宿主侧 build/build-wasm.sh 仍然可用，两者共用同一个 /build 增量构建目录。
+#   * 挂载仓库根目录，构建目录、cargo 缓存、日志、dist/web 都在仓库内，
+#     所以增量构建可以直接复用。默认路径相对 build/ 目录，移动仓库位置无需改配置。
+name: ddnet-wasm-build
+
+services:
+  wasm-build:
+    image: ddnet-wasm-builder:emsdk-4.0.22
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-emscripten/emsdk:4.0.22}
+    restart: "no"
+    working_dir: /build
+    volumes:
+      # 整个仓库（默认 ../，容器内挂到 /root/test；日志/构建缓存都在这里）
+      - ${REPO_ROOT:-..}:/root/test
+      # 与 build/build-wasm.sh 完全相同的挂载布局（相对 build/ compose 目录）
+      - ${DDNET_SOURCE:-../ddnet-dev}:/src:ro
+      - ${DDNET_LIBS:-../ddnet/ddnet-libs}:/src/ddnet-libs:ro
+      - ${BUILD_DIR_HOST:-./wasm-build}:/build
+      - ${CARGO_HOME_HOST:-./cargo-home}:/cargo
+      - ${DIST_DIR_HOST:-../dist/web}:/dist
+      - ${LOG_DIR_HOST:-./logs}:/logs
+    environment:
+      BUILD_TYPE: ${BUILD_TYPE:-Debug}
+      JOBS: ${JOBS:-}
+      CCACHE: ${CCACHE:-0}
+      PACKAGE: ${PACKAGE:-1}
+      CLEAN: ${CLEAN:-0}
+      EMSDK: /emsdk
+      CARGO_HOME: /cargo
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_MULTIPLEXING: "false"
+      HOME: /root
+    command: ["bash", "/root/test/scripts/wasm-build-compose.sh"]
