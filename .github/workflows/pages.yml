@@ -31,7 +31,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # web-dist 含 DDNet.data（约 51.6 MB），Pages 压缩后仍约 49 MB；
+    # deploy-pages 默认只等 10 分钟，sync 大文件时容易误超时。
+    timeout-minutes: 40
     steps:
       - name: Download web-dist from triggering build
         if: github.event_name == 'workflow_run'
@@ -62,3 +64,8 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          # 默认 600000（10 分钟）对含 51.6 MB DDNet.data 的站点偏短。
+          timeout: '1800000'
+          error_count: '20'
+          reporting_interval: '10000'
