@@ -112,8 +112,11 @@ export function createAssetManager(options = {}) {
   const probeIntervalMs = Number.isFinite(options.probeIntervalMs) ? options.probeIntervalMs : 1500;
   const minParallelOption = Number.isFinite(options.minParallel) ? options.minParallel : 8;
   const maxParallelOption = Number.isFinite(options.maxParallel) ? options.maxParallel : 16;
-  const speedGainThreshold = Number.isFinite(options.speedGainThreshold) && options.speedGainThreshold > 0
-    ? options.speedGainThreshold : 1.02;
+  // No fixed percentage: adding one worker to N connections has diminishing
+  // returns, so any measurable throughput increase is a valid improvement.
+  // The option remains for deployments that want extra noise tolerance.
+  const speedGainThreshold = Number.isFinite(options.speedGainThreshold) && options.speedGainThreshold >= 1
+    ? options.speedGainThreshold : 1.0;
   const manifestTimeoutMs = Number.isFinite(options.manifestTimeoutMs) ? options.manifestTimeoutMs : 5000;
 
   const state = {
@@ -676,7 +679,8 @@ export function createAssetManager(options = {}) {
           target += 1;
           phase = 'probing';
         } else if (phase === 'probing') {
-          // Only add another worker if total throughput actually improved.
+          // No fixed 2% gate: even 1% on a high-concurrency download is a
+          // real improvement. Continue while total throughput increases.
           if (speed > baselineSpeed * speedGainThreshold) {
             baselineSpeed = speed;
             if (target < maxParallel) {
