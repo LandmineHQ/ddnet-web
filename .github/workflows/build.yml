@@ -1,6 +1,6 @@
 name: build
 
-# 自动构建（push main/master 或手动触发）：
+# 自动构建（push main/master 或手动触发；仅 .github/ 变更不触发）：
 #   - DDNet WebAssembly + web shell（web-dist）
 #   - relay / relay-master 的 linux/amd64 静态二进制
 #   - relay / relay-master 的 alpine 精简镜像（导出为 docker save tar.gz）
@@ -12,6 +12,10 @@ name: build
 on:
   push:
     branches: [main, master]
+    # 仅修改 workflow/文档配置时不重新构建 wasm/镜像；
+    # 需要强制构建请使用 Actions -> build -> Run workflow。
+    paths-ignore:
+      - ".github/**"
   workflow_dispatch:
 
 permissions:

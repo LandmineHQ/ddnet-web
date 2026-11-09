@@ -404,7 +404,7 @@ docker compose -f compose.test.yml --profile test run --rm -T \
 
 ### 自动 build
 
-[.github/workflows/build.yml](.github/workflows/build.yml) 在 push `main`/`master` 或手动触发时：
+[.github/workflows/build.yml](.github/workflows/build.yml) 在 push `main`/`master` 或手动触发时（仅修改 `.github/**` 不触发）：
 
 - 构建 DDNet WASM + web shell → artifact `web-dist`
 - 构建 `relay-linux-amd64` / `relay-master-linux-amd64` → 两个二进制 artifact
