@@ -60,7 +60,7 @@
 ### 前端与运维
 
 - **零构建前端**：原生 ESM，HTML/CSS/JS 直接部署；资源下载带 sha256 校验与 Cache Storage。
-- **多 CDN 资源回退**：同源优先，失败/首字节慢/低速时切换到 gh-proxy 镜像；所有候选都必须通过 manifest 的 size + sha256 才写入缓存。
+- **并行资源下载**：HTTP Range 分块，从 1 个并发逐步增加到最多 4 个；不支持 Range 时回退单流，最终仍校验 size + sha256。
 - **默认 master 域名**：前端默认请求 `https://master.landmine.top/v1/serverlist`；本地开发用本机 `8391`，LAN HTTPS dev 走同源 `/relay-master`，也可用 meta/window/query 覆盖。
 - **可观测性**：`/api/info`、`/api/stats`、`/healthz`、master `/api/stats`，HUD 显示 WebRTC/WS 传输方式和流量。
 - **生产部署无 Caddy**：`compose.yml` 只启动 Go relay + relay master（回环端口），TLS/WSS/静态站点由 nginx 终止。
@@ -353,38 +353,18 @@ flowchart LR
 | `window.DDWEB_MASTER_BASE` | 运行时覆盖 base |
 | `?masterBase=<base>` | URL 覆盖 base |
 | `?master=<full endpoint>` | 覆盖完整 serverlist 地址 |
-| `window.DDWEB_ASSET_MIRRORS` | 资源镜像 base 数组，默认 gh-proxy/ghfast/ghproxy |
-| `<meta name="asset-mirror-bases">` | 逗号分隔的资源镜像 base |
 
-### 资源多 CDN
 
-`DDNet.data` 等资源默认从站点同源下载；如果首字节慢、卡死或速度低于约 200 KB/s，会自动切换：
+### 资源并行下载
 
-1. 同源 `./DDNet.data`
-2. `https://gh-proxy.com/https://github.com/LandmineHQ/ddnet-web/releases/latest/download/DDNet.data`
-3. `ghfast.top` / `ghproxy.net` 备用
+`DDNet.data` / `DDNet.wasm` 使用 HTTP Range 分块下载：
 
-候选资源都必须通过 `manifest.json` 的 size + sha256 校验后才会写入 Cache Storage。  
-Release 需要包含 `DDNet.js`、`DDNet.wasm`、`DDNet.data`、`manifest.json` 四个独立资产（publish-release 已配置）。
+- 先探测服务器是否支持 `206 Content-Range`
+- 从 **1 个 worker** 开始，按速度逐步增加到最多 4 个并发
+- 不支持 Range 或分块失败时自动回退单流下载
+- 最终仍按 manifest 的 size + sha256 校验，再写入 Cache Storage
 
-自定义镜像：
-
-```html
-<meta name="asset-mirror-bases" content="https://gh-proxy.com/https://github.com/LandmineHQ/ddnet-web/releases/latest/download/">
-```
-
-或：
-
-```js
-window.DDWEB_ASSET_MIRRORS = [
-  'https://your-cdn.example.com/ddnet-web/',
-];
-```
-
----
-
-## 📚 API Surface
-
+不需要 gh-proxy 或第三方镜像；资源从同源站点直接下载。
 ### Relay
 
 | Method | Path | 说明 |
@@ -523,10 +503,6 @@ Release 资产：
 relay-linux-amd64
 relay-master-linux-amd64
 ddnet-web-dist.tar.gz
-DDNet.js
-DDNet.wasm
-DDNet.data
-manifest.json
 ```
 
 Release 资产来自指定 build run，但 tag **由 `gh release create` 在默认分支 HEAD 创建**，不使用

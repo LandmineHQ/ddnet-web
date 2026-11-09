@@ -121,11 +121,8 @@ dist/web/
 
 `wiki/` 由 `docs-site/` 的 VitePress 构建后复制。
 
-## 资源多 CDN
+## 资源并行下载
 
-资源下载器支持同源 + gh-proxy/GitHub Release 镜像回退：首字节超时、卡死或速度过低时切换下一个源；
-所有源都必须通过 `manifest.json` 的 size + sha256 校验后才写入 Cache Storage。
-
-```js
-window.DDWEB_ASSET_MIRRORS = ['https://gh-proxy.com/https://github.com/LandmineHQ/ddnet-web/releases/latest/download/'];
-```
+资源下载器优先使用 HTTP Range 分块：从 1 个并发 worker 开始，按速度逐步增加（最多 4 个），
+服务器不支持 Range 时回退单流。所有块最终都通过 `manifest.json` 的 size + sha256 校验后才写入
+Cache Storage。

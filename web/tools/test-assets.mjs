@@ -340,75 +340,68 @@ await test('abort 中断下载并标记错误', async () => {
   assert.equal(result.ok, false);
 });
 
-await test('主源失败时使用 gh-proxy 镜像并通过 sha256', async () => {
-  const fixture = await makeFixture();
-  const calls = [];
+await test('Range 分块下载从 1 并发逐步增加并校验', async () => {
+  const FILES2 = ['DDNet.js', 'DDNet.wasm', 'DDNet.data'];
+  const contents = {
+    'DDNet.js': new TextEncoder().encode('small-js'),
+    'DDNet.wasm': new TextEncoder().encode('small-wasm'),
+    'DDNet.data': new Uint8Array(2 * 1024 * 1024 + 123),
+  };
+  for (let i = 0; i < contents['DDNet.data'].length; i += 1) contents['DDNet.data'][i] = i % 251;
+  const files = {};
+  for (const name of FILES2) {
+    files[name] = {
+      sha256: await sha256Hex(contents[name], globalThis.crypto),
+      size: contents[name].byteLength,
+    };
+  }
+  const manifest = { version: 'range-test', files };
+  let active = 0;
+  let peak = 0;
+  const rangeCalls = [];
   const fetchImpl = async (url, options = {}) => {
-    const parsed = new URL(String(url));
-    calls.push(parsed.href);
-    if (parsed.pathname === '/manifest.json' && parsed.host === 'test.local') {
-      return new Response(JSON.stringify(fixture.manifest), { status: 200, headers: { 'content-type': 'application/json' } });
+    const pathname = new URL(String(url), 'http://test.local/').pathname;
+    if (pathname === '/manifest.json') {
+      return new Response(JSON.stringify(manifest), { status: 200, headers: { 'content-type': 'application/json' } });
     }
-    if (parsed.host === 'test.local') return new Response('missing', { status: 404 });
-    if (parsed.host === 'mirror.test') {
-      const name = parsed.pathname.replace(/^\//, '');
-      const bytes = fixture.contents[name];
-      if (!bytes) return new Response('missing', { status: 404 });
-      if (options.method === 'HEAD') return new Response(null, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
-      return new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
+    const name = pathname.replace(/^\//, '');
+    const bytes = contents[name];
+    if (!bytes) return new Response('missing', { status: 404 });
+    const range = options.headers && options.headers.Range;
+    if (range) {
+      const match = /bytes=(\d+)-(\d+)/.exec(String(range));
+      if (!match) return new Response('bad range', { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), bytes.byteLength - 1);
+      rangeCalls.push([start, end]);
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active -= 1;
+      return new Response(bytes.slice(start, end + 1), {
+        status: 206,
+        headers: { 'content-type': 'application/octet-stream', 'content-range': 'bytes ' + start + '-' + end + '/' + bytes.byteLength, 'content-length': String(end - start + 1) },
+      });
     }
-    return new Response('missing', { status: 404 });
+    return new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
   };
   const manager = createAssetManager({
     baseUrl: 'http://test.local/',
-    mirrorBases: ['https://mirror.test/'],
     fetchImpl,
     cacheStorage: createMemoryCaches(),
     cryptoImpl: globalThis.crypto,
     progressIntervalMs: 0,
-    startupTimeoutMs: 1000,
-    stallTimeoutMs: 1000,
+    maxParallel: 3,
+    rampIntervalMs: 10,
+    startupTimeoutMs: 2000,
+    stallTimeoutMs: 2000,
   });
   await manager.init();
   const result = await manager.download();
   assert.equal(result.ok, true, JSON.stringify(result.snapshot.lastError));
-  assert.ok(calls.some((url) => url.indexOf('https://mirror.test/DDNet.data') === 0));
-  const data = manager.snapshot().items.find((item) => item.name === 'DDNet.data');
-  assert.equal(data.source, 'mirror.test');
-});
-
-await test('主 manifest 失败时镜像 manifest 仍可校验资产', async () => {
-  const fixture = await makeFixture({ salt: 'mirror-manifest' });
-  const fetchImpl = async (url, options = {}) => {
-    const parsed = new URL(String(url));
-    if (parsed.host === 'test.local') return new Response('missing', { status: 404 });
-    if (parsed.host === 'mirror.test') {
-      const name = parsed.pathname.replace(/^\//, '');
-      if (name === 'manifest.json') {
-        return new Response(JSON.stringify(fixture.manifest), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      const bytes = fixture.contents[name];
-      if (!bytes) return new Response('missing', { status: 404 });
-      if (options.method === 'HEAD') return new Response(null, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
-      return new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
-    }
-    return new Response('missing', { status: 404 });
-  };
-  const manager = createAssetManager({
-    baseUrl: 'http://test.local/',
-    mirrorBases: ['https://mirror.test/'],
-    fetchImpl,
-    cacheStorage: createMemoryCaches(),
-    cryptoImpl: globalThis.crypto,
-    progressIntervalMs: 0,
-    startupTimeoutMs: 1000,
-    stallTimeoutMs: 1000,
-  });
-  const snap = await manager.init();
-  assert.equal(snap.usingFallbackManifest, false);
-  assert.equal(snap.manifestSource, 'mirror.test');
-  const result = await manager.download();
-  assert.equal(result.ok, true, JSON.stringify(result.snapshot.lastError));
+  assert.ok(rangeCalls.length >= 2, 'expected multiple range requests');
+  assert.ok(peak >= 2, 'expected concurrency to ramp above one, peak=' + peak);
+  assert.equal(manager.isComplete(), true);
 });
 
 console.log('');

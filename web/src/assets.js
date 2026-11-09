@@ -11,16 +11,6 @@ export const REQUIRED_FILES = ASSET_FILES.map((file) => file.name);
 export const BIG_FILES = ASSET_FILES.filter((file) => file.big).map((file) => file.name);
 export const MANIFEST_URL = 'manifest.json';
 
-// Optional GitHub release mirrors. The release workflow publishes the raw
-// DDNet.js/.wasm/.data and manifest.json alongside the tarball. gh-proxy
-// terminates HTTPS and supports CORS; the primary same-origin URL is always
-// tried first. Override with window.DDWEB_ASSET_MIRRORS,
-// <meta name="asset-mirror-bases"> or options.mirrorBases.
-export const DEFAULT_ASSET_MIRROR_BASES = [
-  'https://gh-proxy.com/https://github.com/LandmineHQ/ddnet-web/releases/latest/download/',
-  'https://ghfast.top/https://github.com/LandmineHQ/ddnet-web/releases/latest/download/',
-  'https://ghproxy.net/https://github.com/LandmineHQ/ddnet-web/releases/latest/download/',
-];
 export const CACHE_PREFIX = 'ddweb-assets-';
 export const FALLBACK_CACHE_NAME = 'ddweb-assets-fallback';
 
@@ -78,48 +68,12 @@ function concatChunks(chunks, total) {
   return output;
 }
 
-function mirrorUrl(base, name) {
-  const value = String(base == null ? '' : base).trim();
-  if (!value) return '';
-  if (value.indexOf('{path}') >= 0) return value.replace('{path}', name);
-  return value.replace(/\/+$/, '') + '/' + name;
-}
-
 function sourceLabel(url) {
   try {
     return new URL(url).host || 'source';
   } catch (error) {
     return 'source';
   }
-}
-
-function readMirrorBases(options) {
-  if (Array.isArray(options.mirrorBases)) return normalizeMirrorBases(options.mirrorBases);
-  let values = null;
-  try {
-    if (globalThis && Array.isArray(globalThis.DDWEB_ASSET_MIRRORS)) values = globalThis.DDWEB_ASSET_MIRRORS;
-  } catch (error) {
-    values = null;
-  }
-  if (values === null && typeof document !== 'undefined' && document.querySelector) {
-    const meta = document.querySelector('meta[name="asset-mirror-bases"]');
-    if (meta && meta.content) values = meta.content.split(',');
-  }
-  return normalizeMirrorBases(values === null ? DEFAULT_ASSET_MIRROR_BASES : values);
-}
-
-function normalizeMirrorBases(values) {
-  const out = [];
-  const seen = new Set();
-  for (const raw of values) {
-    const value = String(raw == null ? '' : raw).trim();
-    if (!value || !/^https?:\/\//i.test(value)) continue;
-    const key = value.replace(/\/+$/, '');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(key);
-  }
-  return out;
 }
 
 function createItem(definition, baseUrl) {
@@ -152,11 +106,10 @@ export function createAssetManager(options = {}) {
   const now = options.now || (() => (globalThis.performance && globalThis.performance.now ? globalThis.performance.now() : Date.now()));
   const progressIntervalMs = Number.isFinite(options.progressIntervalMs) ? options.progressIntervalMs : 80;
   const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : () => {};
-  const mirrorBases = readMirrorBases(options);
   const startupTimeoutMs = Number.isFinite(options.startupTimeoutMs) ? options.startupTimeoutMs : 5000;
   const stallTimeoutMs = Number.isFinite(options.stallTimeoutMs) ? options.stallTimeoutMs : 15000;
-  const slowSwitchMs = Number.isFinite(options.slowSwitchMs) ? options.slowSwitchMs : 8000;
-  const minBytesPerSecond = Number.isFinite(options.minBytesPerSecond) ? options.minBytesPerSecond : 200 * 1024;
+  const rampIntervalMs = Number.isFinite(options.rampIntervalMs) ? options.rampIntervalMs : 1200;
+  const maxParallelOption = Number.isFinite(options.maxParallel) ? options.maxParallel : 4;
   const manifestTimeoutMs = Number.isFinite(options.manifestTimeoutMs) ? options.manifestTimeoutMs : 5000;
 
   const state = {
@@ -192,21 +145,11 @@ export function createAssetManager(options = {}) {
   }
 
   function sourcesFor(item) {
-    const urls = [item.url];
-    for (const base of mirrorBases) {
-      const url = mirrorUrl(base, item.name);
-      if (url && urls.indexOf(url) < 0) urls.push(url);
-    }
-    return urls;
+    return [item.url];
   }
 
   function manifestSources() {
-    const urls = [urlFor(MANIFEST_URL)];
-    for (const base of mirrorBases) {
-      const url = mirrorUrl(base, MANIFEST_URL);
-      if (url && urls.indexOf(url) < 0) urls.push(url);
-    }
-    return urls;
+    return [urlFor(MANIFEST_URL)];
   }
 
   function itemByName(name) {
@@ -406,7 +349,7 @@ export function createAssetManager(options = {}) {
     return error;
   }
 
-  async function downloadSource(item, url) {
+  async function downloadStream(item, url) {
     const controller = new AbortController();
     const external = abortController ? abortController.signal : null;
     let externalAborted = false;
@@ -436,11 +379,7 @@ export function createAssetManager(options = {}) {
         controller.abort();
         return;
       }
-      if (slowSwitchMs > 0 && minBytesPerSecond > 0 && item.received > 0 && elapsed > slowSwitchMs
-        && (item.received * 1000) / elapsed < minBytesPerSecond) {
-        timedOut = true;
-        controller.abort();
-      }
+      // No alternate source is used; only guard a completely stalled stream.
     };
     timer = setInterval(check, 1000);
 
@@ -484,22 +423,7 @@ export function createAssetManager(options = {}) {
         item.received = received;
       }
 
-      const expectedSize = item.expectedSize || item.size;
-      if (expectedSize && received !== expectedSize) {
-        throw new Error(item.name + ' 大小不匹配：期望 ' + expectedSize + ' 字节，实际收到 ' + received + ' 字节');
-      }
-
-      const bytes = concatChunks(chunks, received);
-      item.state = 'verifying';
-      emit('verifying', item);
-      if (item.sha256) {
-        const digest = await sha256Hex(bytes, cryptoImpl);
-        if (digest.toLowerCase() !== item.sha256) {
-          throw new Error(item.name + ' sha256 校验失败（期望 ' + item.sha256.slice(0, 12) + '…，实际 ' + digest.slice(0, 12) + '…）');
-        }
-        item.verified = true;
-      }
-      return bytes;
+      return concatChunks(chunks, received);
     } catch (error) {
       if (externalAborted) throw abortedError();
       if (timedOut) throw new Error(item.name + ' 下载源超时或速度过低：' + sourceLabel(url));
@@ -508,6 +432,262 @@ export function createAssetManager(options = {}) {
       if (timer) clearInterval(timer);
       if (external) external.removeEventListener('abort', onExternalAbort);
     }
+  }
+
+  function rangeUnsupported(message) {
+    const error = new Error(message || 'server does not support range requests');
+    error.name = 'RangeUnsupportedError';
+    return error;
+  }
+
+  function contentRange(header) {
+    const match = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(String(header || '').trim());
+    if (!match) return null;
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    const total = match[3] === '*' ? 0 : Number(match[3]);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return null;
+    return { start, end, total };
+  }
+
+  async function fetchRange(url, start, end, signal, onProgress) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      if (signal) {
+        if (signal.aborted) throw abortedError();
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      let stall = resetStall(null, controller);
+      try {
+        const response = await fetchImpl(url, {
+          cache: 'no-store',
+          signal: controller.signal,
+          headers: { Range: 'bytes=' + start + '-' + end },
+        });
+        if (response.status !== 206) {
+          if (response.status === 200) throw rangeUnsupported('range request returned HTTP 200');
+          throw new Error('HTTP ' + response.status);
+        }
+        const range = contentRange(response.headers.get('content-range'));
+        if (!range || range.start !== start || range.end !== end) {
+          throw rangeUnsupported('invalid Content-Range: ' + (response.headers.get('content-range') || 'missing'));
+        }
+        const expected = end - start + 1;
+        const buffer = new Uint8Array(expected);
+        let offset = 0;
+        if (response.body && typeof response.body.getReader === 'function') {
+          const reader = response.body.getReader();
+          for (;;) {
+            const result = await reader.read();
+            if (result.done) break;
+            if (result.value) {
+              if (offset + result.value.byteLength > expected) {
+                throw new Error('range response exceeded requested size');
+              }
+              buffer.set(result.value, offset);
+              offset += result.value.byteLength;
+              if (onProgress) onProgress(result.value.byteLength);
+              stall = resetStall(stall, controller);
+            }
+          }
+        } else {
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (bytes.byteLength !== expected) throw new Error('range response size mismatch');
+          buffer.set(bytes);
+          offset = expected;
+          if (onProgress) onProgress(expected);
+        }
+        if (offset !== expected) throw new Error('range response ended early (' + offset + '/' + expected + ')');
+        return buffer;
+      } catch (error) {
+        if (error && error.name === 'RangeUnsupportedError') throw error;
+        if (signal && signal.aborted) throw abortedError();
+        lastError = error;
+      } finally {
+        if (stall) clearTimeout(stall);
+        if (signal) signal.removeEventListener('abort', onAbort);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+    throw lastError || new Error('range request failed');
+  }
+
+  function resetStall(timer, controller) {
+    if (timer) clearTimeout(timer);
+    if (stallTimeoutMs <= 0) return null;
+    return setTimeout(() => controller.abort(), stallTimeoutMs);
+  }
+
+  async function downloadRanged(item, url) {
+    const total = Number(item.expectedSize || item.size);
+    // Small files are not worth the extra request overhead.
+    if (!Number.isFinite(total) || total < 1024 * 1024) throw rangeUnsupported('file too small');
+    const controller = new AbortController();
+    const external = abortController ? abortController.signal : null;
+    let externalAborted = false;
+    const onExternalAbort = () => {
+      externalAborted = true;
+      controller.abort();
+    };
+    if (external) {
+      if (external.aborted) throw abortedError();
+      external.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    try {
+      const probeTimer = setTimeout(() => controller.abort(), startupTimeoutMs > 0 ? startupTimeoutMs : 5000);
+      let probe;
+      try {
+        probe = await fetchImpl(url, {
+          cache: 'no-store',
+          signal: controller.signal,
+          headers: { Range: 'bytes=0-0' },
+        });
+      } finally {
+        clearTimeout(probeTimer);
+      }
+      if (probe.status !== 206) {
+        if (probe.body && probe.body.cancel) probe.body.cancel();
+        throw rangeUnsupported('server does not support range requests');
+      }
+      const probeRange = contentRange(probe.headers.get('content-range'));
+      if (!probeRange || (probeRange.total && probeRange.total !== total)) {
+        if (probe.body && probe.body.cancel) probe.body.cancel();
+        throw rangeUnsupported('unexpected range metadata');
+      }
+      if (probe.body && probe.body.cancel) probe.body.cancel();
+
+      const hardware = (typeof navigator !== 'undefined' && Number(navigator.hardwareConcurrency)) || 2;
+      const requested = Number(maxParallelOption);
+      const maxParallel = Math.max(1, Math.min(
+        Number.isFinite(requested) && requested > 0 ? requested : 4,
+        Math.max(1, Math.min(4, hardware))
+      ));
+      const chunkSize = Math.max(
+        512 * 1024,
+        Math.min(4 * 1024 * 1024, Math.ceil(total / (maxParallel * 3)))
+      );
+      const chunkCount = Math.ceil(total / chunkSize);
+      if (chunkCount <= 1 || maxParallel === 1) {
+        return await downloadStream(item, url);
+      }
+
+      const output = new Uint8Array(total);
+      let next = 0;
+      let active = 0;
+      let target = 1;
+      let received = 0;
+      let lastEmitAt = 0;
+      let settled = false;
+      let resolveDone;
+      let rejectDone;
+      const done = new Promise((resolve, reject) => {
+        resolveDone = resolve;
+        rejectDone = reject;
+      });
+      const workers = [];
+      const finishIfDone = () => {
+        if (!settled && next >= chunkCount && active === 0) {
+          settled = true;
+          resolveDone(output);
+        }
+      };
+      const progress = (bytes) => {
+        received += bytes;
+        item.received = received;
+        updateSpeed(item, received);
+        const at = now();
+        if (at - lastEmitAt >= progressIntervalMs) {
+          lastEmitAt = at;
+          emit('progress', item);
+        }
+      };
+      const spawn = () => {
+        while (!settled && active < target && active < chunkCount) {
+          active += 1;
+          const worker = (async () => {
+            for (;;) {
+              if (controller.signal.aborted) throw abortedError();
+              const index = next;
+              next += 1;
+              if (index >= chunkCount) break;
+              const start = index * chunkSize;
+              const end = Math.min(total - 1, start + chunkSize - 1);
+              const bytes = await fetchRange(url, start, end, controller.signal, progress);
+              output.set(bytes, start);
+            }
+          })();
+          workers.push(worker.then(() => {
+            active -= 1;
+            finishIfDone();
+          }, (error) => {
+            active -= 1;
+            if (!settled) {
+              settled = true;
+              rejectDone(error);
+            }
+          }));
+        }
+      };
+      const ramp = setInterval(() => {
+        if (settled) return;
+        if (target < maxParallel) target += 1;
+        spawn();
+      }, rampIntervalMs);
+      spawn();
+      try {
+        const bytes = await done;
+        return bytes;
+      } finally {
+        clearInterval(ramp);
+        controller.abort();
+      }
+    } catch (error) {
+      if (externalAborted) throw abortedError();
+      if (error && error.name === 'AbortError') throw rangeUnsupported('range request was aborted');
+      throw error;
+    } finally {
+      if (external) external.removeEventListener('abort', onExternalAbort);
+    }
+  }
+
+  async function verifyAndStore(item, bytes) {
+    const expectedSize = item.expectedSize || item.size;
+    if (expectedSize && bytes.byteLength !== expectedSize) {
+      throw new Error(item.name + ' 大小不匹配：期望 ' + expectedSize + ' 字节，实际收到 ' + bytes.byteLength + ' 字节');
+    }
+    item.state = 'verifying';
+    emit('verifying', item);
+    if (item.sha256) {
+      const digest = await sha256Hex(bytes, cryptoImpl);
+      if (digest.toLowerCase() !== item.sha256) {
+        throw new Error(item.name + ' sha256 校验失败（期望 ' + item.sha256.slice(0, 12) + '…，实际 ' + digest.slice(0, 12) + '…）');
+      }
+      item.verified = true;
+    }
+    if (state.cache) {
+      try {
+        await state.cache.put(item.url, new Response(bytes, {
+          headers: {
+            'content-type': item.type,
+            'content-length': String(bytes.byteLength),
+            'x-ddweb-sha256': item.sha256 || '',
+            'x-ddweb-size': String(bytes.byteLength),
+          },
+        }));
+      } catch (cacheError) {
+        state.cacheError = (cacheError && cacheError.message) || '缓存写入失败';
+        memoryBlobs.set(item.name, new Blob([bytes], { type: item.type }));
+      }
+    } else {
+      memoryBlobs.set(item.name, new Blob([bytes], { type: item.type }));
+    }
+    item.state = 'cached';
+    item.received = bytes.byteLength;
+    item.speed = 0;
+    item.finishedAt = now();
+    emit('cached', item);
   }
 
   async function downloadOne(item) {
@@ -519,52 +699,22 @@ export function createAssetManager(options = {}) {
     item.sampleAt = 0;
     item.sampleBytes = 0;
     item.startedAt = now();
+    item.source = sourceLabel(item.url);
     emit('start', item);
 
-    const urls = sourcesFor(item);
-    const errors = [];
-    for (const url of urls) {
-      item.state = 'downloading';
+    let bytes;
+    try {
+      bytes = await downloadRanged(item, item.url);
+    } catch (error) {
+      if (error && error.name === 'AbortError') throw error;
       item.received = 0;
       item.speed = 0;
       item.sampleAt = 0;
       item.sampleBytes = 0;
-      item.source = sourceLabel(url);
-      emit('source', item);
-      try {
-        const bytes = await downloadSource(item, url);
-        if (state.cache) {
-          try {
-            await state.cache.put(item.url, new Response(bytes, {
-              headers: {
-                'content-type': item.type,
-                'content-length': String(bytes.byteLength),
-                'x-ddweb-sha256': item.sha256 || '',
-                'x-ddweb-size': String(bytes.byteLength),
-              },
-            }));
-          } catch (cacheError) {
-            state.cacheError = (cacheError && cacheError.message) || '缓存写入失败';
-            memoryBlobs.set(item.name, new Blob([bytes], { type: item.type }));
-          }
-        } else {
-          memoryBlobs.set(item.name, new Blob([bytes], { type: item.type }));
-        }
-        item.state = 'cached';
-        item.received = bytes.byteLength;
-        item.speed = 0;
-        item.finishedAt = now();
-        emit('cached', item);
-        return;
-      } catch (error) {
-        if (error && error.name === 'AbortError') throw error;
-        item.received = 0;
-        item.speed = 0;
-        errors.push(sourceLabel(url) + ': ' + ((error && error.message) || error));
-        emit('retry', item);
-      }
+      emit('retry', item);
+      bytes = await downloadStream(item, item.url);
     }
-    throw new Error('所有下载源失败：' + errors.join('；'));
+    await verifyAndStore(item, bytes);
   }
 
   async function init() {

@@ -310,21 +310,8 @@
 - 触屏按钮布局由 DDNet 内置 `cl_touch_controls` 提供，可在游戏内「设置 → 触屏控制」里调整位置/大小。
 - 触屏按钮只在进入游戏后出现；返回游戏菜单可用屏幕上的返回按钮（= Esc）或浏览器返回键。
 
-## 资源多 CDN
+## 资源并行下载
 
-`src/assets.js` 先请求同源资源；首字节/速度异常时回退到 `window.DDWEB_ASSET_MIRRORS` 或
-`<meta name="asset-mirror-bases">` 指定的镜像。默认使用 gh-proxy 代理 GitHub Release 的独立
-`DDNet.js` / `DDNet.wasm` / `DDNet.data` / `manifest.json` 资产。每个候选都必须通过 manifest 的
-大小和 sha256 校验后才会缓存。
-
-## GitHub Pages COOP/COEP
-
-GitHub Pages 不支持自定义响应头。`coi-serviceworker.js` 会在首次访问时注册并自动重载一次，
-给导航响应补上：
-
-```text
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
-
-之后 `SharedArrayBuffer` 才可用。生产 nginx 应直接返回这两个头，不依赖 Service Worker。
+`src/assets.js` 先探测同源 URL 的 Range 支持；支持时按块下载，并从 1 个并发逐步增加到最多 4 个，
+所有块按 offset 写入同一个缓冲区。服务器不支持 Range 时回退单流下载。最终仍做 size + sha256 校验
+后才写入 Cache Storage。不需要 gh-proxy。
