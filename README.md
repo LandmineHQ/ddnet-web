@@ -481,9 +481,10 @@ relay-master-linux-amd64
 ddnet-web-dist.tar.gz
 ```
 
-Release tag 指向指定 build run 的 `head_sha`：workflow 先用 `git push` 推送 tag，再用
-`gh release create --verify-tag` 创建 Release，不使用 `--target`。这样即使目标提交与默认分支的
-`.github/workflows/` 不同，也不会要求 `GITHUB_TOKEN` 无法获得的 `workflows: write`。
+Release 资产来自指定 build run，但 tag **由 `gh release create` 在默认分支 HEAD 创建**，不使用
+`--target`。这是为了避开 GitHub 的 workflow-scope 限制：当 target 提交的 `.github/workflows/`
+与默认分支不同时，需要 `GITHUB_TOKEN` 无法获得的 `workflows: write`。Release notes 会记录实际 build
+commit。
 
 获取 build run id：
 

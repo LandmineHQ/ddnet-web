@@ -128,43 +128,6 @@ jobs:
           EOF
           cat release-body.md
 
-      - name: Checkout release commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.run.outputs.sha }}
-          fetch-depth: 0
-          persist-credentials: true
-          # The release assets were downloaded/packaged before this checkout;
-          # do not let git clean remove untracked assets/out.
-          clean: false
-          token: ${{ github.token }}
-
-      - name: Checkout release commit and ensure tag
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-          RUN_SHA: ${{ steps.run.outputs.sha }}
-        run: |
-          set -euo pipefail
-          # Do not use `gh release create --target`: when the target commit's
-          # .github/workflows differs from the default branch, GitHub requires
-          # workflows:write, which GITHUB_TOKEN cannot obtain. Push the tag via
-          # git instead, then create the release from that existing tag.
-          git fetch --tags --force origin
-          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
-            tag_sha=$(git rev-parse "${VERSION}^{commit}")
-          else
-            git tag "${VERSION}" "${RUN_SHA}"
-            git push origin "refs/tags/${VERSION}"
-            tag_sha="${RUN_SHA}"
-          fi
-          if [ "${tag_sha}" != "${RUN_SHA}" ]; then
-            echo "::error::tag ${VERSION} points to ${tag_sha}, expected ${RUN_SHA}"
-            exit 1
-          fi
-          echo "tag ${VERSION} -> ${tag_sha}"
-
       - name: Create or update release
         shell: bash
         env:
@@ -176,10 +139,8 @@ jobs:
           DRAFT: ${{ inputs.draft }}
         run: |
           set -uo pipefail
-          # The tag was pushed in the previous step. Create the release from
-          # that existing tag (no --target), so GitHub does not require the
-          # workflows:write permission for a commit whose workflow files differ
-          # from the default branch.
+          # No --target: GitHub creates the tag at default HEAD, so the
+          # workflows:write scope is never required.
           for attempt in 1 2 3 4; do
             echo "release attempt $attempt/4"
             if gh release view "$VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
@@ -189,7 +150,10 @@ jobs:
                 exit 0
               fi
             else
-              args=(--repo "$GH_REPO" --title "$VERSION" --notes-file release-body.md --verify-tag)
+              # No --target and no --verify-tag: GitHub creates the tag at the
+              # current default branch HEAD. This avoids the workflows:write
+              # requirement for a target commit whose workflows differ from HEAD.
+              args=(--repo "$GH_REPO" --title "$VERSION" --notes-file release-body.md)
               [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
               [[ "$DRAFT" == "true" ]] && args+=(--draft)
               if gh release create "$VERSION" "${args[@]}"; then
