@@ -134,6 +134,32 @@ WebRTC-only 节点没有顶层 `url`；前端会根据 `signalUrl` 推导连接 
 
 默认 CORS 为 `*`，可用 `MASTER_CORS_ORIGINS` 限制。
 
+## HTTPS 信令代理
+
+如果 relay 只能提供 HTTP（没有 TLS），master 会把它注册的 HTTP WebRTC `signalUrl` 改写成：
+
+```text
+https://<master>/v1/signal/<id>/rtc/offer
+```
+
+浏览器只访问 HTTPS master，master 再服务端转发到 relay 的 HTTP 信令；UDP 数据通道始终由浏览器直连 relay，不经过代理。
+
+代理端点：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/v1/signal/<id>/rtc/offer` | 转发 WebRTC offer/answer |
+| `GET` | `/v1/signal/<id>/healthz` | relay 健康检查 |
+| `GET` | `/v1/signal/<id>/api/info` | relay ICE/info |
+
+限制：
+
+- 只允许已注册、已验证且 healthy 的 HTTP WebRTC 信令
+- 只允许 `rtc/offer`、`healthz`、`api/info`
+- **不代理 `/udp` / WebSocket / 任何 UDP 数据**
+- 每 IP 默认 120 次/分钟
+- 只转发 `Origin`、`Authorization`、`X-Relay-Token` 和 token 查询参数
+
 ## 其他端点
 
 | 方法 | 路径 | 说明 |

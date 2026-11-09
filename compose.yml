@@ -35,6 +35,9 @@ services:
       MASTER_PROBE_INTERVAL_MS: ${MASTER_PROBE_INTERVAL_MS:-900000}
       MASTER_PROBE_TIMEOUT_MS: ${MASTER_PROBE_TIMEOUT_MS:-5000}
       MASTER_HEARTBEAT_MS: ${MASTER_HEARTBEAT_MS:-30000}
+      # 对外 HTTPS master 地址；serverlist 用它生成 HTTP relay 的信令代理链接。
+      MASTER_PUBLIC_URL: ${MASTER_PUBLIC_URL:-https://${MASTER_DOMAIN:-master.landmine.top}}
+      MASTER_SIGNAL_PROXY_PER_MINUTE: ${MASTER_SIGNAL_PROXY_PER_MINUTE:-120}
     # nginx 在宿主机上反代；只绑定回环，避免 master API 直接暴露公网
     ports:
       - "127.0.0.1:8391:8391"

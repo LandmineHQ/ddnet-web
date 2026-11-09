@@ -53,6 +53,7 @@
 - **WebSocket 回退**：`ws[s]://relay/udp/<host>:<port>[?token=...&protocol=7]`，每帧对应一个 UDP 数据报。
 - **固定共享 UDP 端口**：所有 WebRTC peer 共用同一 `ice.UDPMuxDefault`，不会按用户分配 UDP 端口；TCP(WS) 与 UDP(ICE) 默认同号（开发 `8390`，生产 `443`）。
 - **relay master**：`/v1/register` 按 `transports` 数组逐项验证：WebSocket 做 RFC6455 `/ws` 握手，WebRTC 建立真实 DataChannel；至少一项成功才入列表，失败项不对外暴露。
+- **HTTP 信令代理**：master 对 `http://` 的 WebRTC signalUrl 自动改写为 `https://<master>/v1/signal/<id>/rtc/offer`，只反代信令/健康/信息，不代理 UDP 数据通道；relay 无需自行配置 TLS。
 - **混合传输**：relay 可只注册 WebSocket、只注册 WebRTC，或两者都注册；每 15 分钟分别复检，某项失败只移除该项。
 - **token relay 不注册**：配置了 `RELAY_TOKENS` 的 relay 自动跳过 master 注册，避免私有节点泄露到公共列表。
 
@@ -330,6 +331,8 @@ flowchart LR
 | `MASTER_REGISTER_PER_MINUTE` | `30` | 单 IP 注册频率限制 |
 | `MASTER_MAX_NODES` | `1000` | 最大注册节点数 |
 | `MASTER_CORS_ORIGINS` | `*` | `/v1/serverlist` CORS |
+| `MASTER_PUBLIC_URL` | 请求 Host / X-Forwarded-Proto | serverlist 中 HTTP relay 的 HTTPS 信令代理前缀 |
+| `MASTER_SIGNAL_PROXY_PER_MINUTE` | `120` | 每 IP 每分钟信令代理请求上限 |
 
 ### Frontend
 
@@ -363,6 +366,9 @@ flowchart LR
 | `POST` | `/v1/register` | relay 注册；按 transports 逐项验证 WSS/WebRTC |
 | `POST` | `/v1/unregister` | 按 transports 数组成员移除节点 |
 | `GET` | `/v1/serverlist` | 已验证且 healthy 的节点列表，CORS 默认 `*` |
+| `POST` | `/v1/signal/<id>/rtc/offer` | 为 HTTP WebRTC relay 提供 HTTPS 信令反代 |
+| `GET` | `/v1/signal/<id>/healthz` | 信令代理健康检查 |
+| `GET` | `/v1/signal/<id>/api/info` | 信令代理 relay 信息 |
 | `GET` | `/healthz` | master 健康检查 |
 | `GET` | `/api/stats` | 节点数、探测配置 |
 

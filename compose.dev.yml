@@ -52,6 +52,8 @@ services:
       MASTER_PROBE_INTERVAL_MS: "900000"
       MASTER_PROBE_TIMEOUT_MS: "5000"
       MASTER_HEARTBEAT_MS: "30000"
+      MASTER_PUBLIC_URL: ${MASTER_PUBLIC_URL:-}
+      MASTER_SIGNAL_PROXY_PER_MINUTE: ${MASTER_SIGNAL_PROXY_PER_MINUTE:-120}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8391/healthz || exit 1"]
       interval: 5s

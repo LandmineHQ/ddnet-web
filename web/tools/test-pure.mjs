@@ -1140,6 +1140,16 @@ await test('sanitizeRelay：WebRTC-only transports', () => {
   assert.equal(result.relay.webrtcOnly, true);
   assert.equal(result.relay.transports.length, 1);
 });
+await test('sanitizeRelay：master HTTPS 信令代理路径', () => {
+  const result = sanitizeRelay({
+    transports: [{ type: 'webrtc', signalUrl: 'https://master.example.com/v1/signal/abc123/rtc/offer', host: 'relay.example.com', udpPort: 443 }],
+    source: 'master',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.relay.url, 'wss://master.example.com/v1/signal/abc123');
+  assert.equal(result.relay.webrtcOnly, true);
+});
+
 await test('relay master：WebRTC-only 节点无 url', async () => {
   const result = await loadMasterRelays(async () => new Response(JSON.stringify({
     servers: [{

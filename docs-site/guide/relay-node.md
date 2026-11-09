@@ -6,7 +6,11 @@ relay 是浏览器和原版 DDNet 服务器之间的桥：
 浏览器 ── WebRTC DataChannel / WebSocket ──> relay ── UDP ──> DDNet 服务器
 ```
 
-relay 只监听明文 HTTP/WS；生产环境的 HTTPS/WSS 由 nginx 终止。
+relay 只监听明文 HTTP/WS；生产环境的 HTTPS/WSS 通常由 nginx 终止。
+
+如果 relay 所在设备无法配置 TLS，使用 WebRTC-only + HTTP 信令即可：master 会自动把
+`http://` 的 `signalUrl` 改写成 HTTPS 的 `/v1/signal/<id>/rtc/offer` 代理，relay 本身不需要证书。
+UDP 数据仍然直连 relay。
 
 ## 要求
 
@@ -90,6 +94,7 @@ RELAY_MASTER_ADVERTISE_URL='wss://play.example.com' \
 | `RELAY_MASTER_ADVERTISE_URL` | WebSocket 注册地址 / WebRTC 信令推导 base |
 | `RELAY_MASTER_SIGNAL_URL` | 显式 WebRTC 信令 URL（WebRTC-only 时有用） |
 | `RELAY_MASTER_TRANSPORTS` | `websocket,webrtc`（RTC 开启时）或 `webrtc` |
+| `MASTER_PUBLIC_URL`（master） | 对外 HTTPS master 地址，用于生成信令代理链接 |
 | `RELAY_MASTER_INTERVAL_MS` | 注册/心跳间隔，默认 `30000` |
 
 ## WebRTC 与固定端口

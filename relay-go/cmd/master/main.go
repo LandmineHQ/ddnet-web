@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -38,6 +39,8 @@ Options:
       --trust-proxy                 Trust X-Forwarded-For (default true)
       --max-nodes <n>               Maximum registered relays (default 1000)
       --register-per-minute <n>     Registrations per IP per minute (default 30)
+      --signal-proxy-per-minute <n> Signaling proxy requests per IP per minute (default 120)
+      --public-url <url>            Public master URL for signal proxy links
       --log-level <level>           debug | info | warn | error | silent
       --print-config                Print effective config and exit
       --version                     Print version and exit
@@ -46,41 +49,48 @@ Options:
 Environment: MASTER_HOST, MASTER_PORT, MASTER_PROBE_INTERVAL_MS,
 MASTER_PROBE_TIMEOUT_MS, MASTER_HEARTBEAT_MS, MASTER_CORS_ORIGINS,
 MASTER_TRUST_PROXY, MASTER_MAX_NODES, MASTER_REGISTER_PER_MINUTE,
-MASTER_LOG_LEVEL
+MASTER_SIGNAL_PROXY_PER_MINUTE, MASTER_PUBLIC_URL, MASTER_LOG_LEVEL
 
 Endpoints:
   POST /v1/register     relay registration; master validates each transports[] entry
   POST /v1/unregister   remove a relay {transports:[...]}
   GET  /v1/serverlist   verified, healthy relay nodes
+  POST /v1/signal/<id>/rtc/offer  HTTPS signaling proxy for HTTP WebRTC relays
+  GET  /v1/signal/<id>/healthz    signaling proxy health
+  GET  /v1/signal/<id>/api/info   signaling proxy info
   GET  /healthz         health check
   GET  /api/stats       registry counters
 `
 
 type config struct {
-	Host              string   `json:"host"`
-	Port              int      `json:"port"`
-	ProbeIntervalMs   int64    `json:"probeIntervalMs"`
-	ProbeTimeoutMs    int64    `json:"probeTimeoutMs"`
-	HeartbeatMs       int64    `json:"heartbeatMs"`
-	CORSOrigins       []string `json:"corsOrigins"`
-	TrustProxy        bool     `json:"trustProxy"`
-	MaxNodes          int      `json:"maxNodes"`
-	RegisterPerMinute int      `json:"registerPerMinute"`
-	LogLevel          string   `json:"logLevel"`
+	Host                 string   `json:"host"`
+	Port                 int      `json:"port"`
+	ProbeIntervalMs      int64    `json:"probeIntervalMs"`
+	ProbeTimeoutMs       int64    `json:"probeTimeoutMs"`
+	HeartbeatMs          int64    `json:"heartbeatMs"`
+	CORSOrigins          []string `json:"corsOrigins"`
+	TrustProxy           bool     `json:"trustProxy"`
+	MaxNodes             int      `json:"maxNodes"`
+	RegisterPerMinute    int      `json:"registerPerMinute"`
+	SignalProxyPerMinute int      `json:"signalProxyPerMinute"`
+	PublicURL            string   `json:"publicUrl"`
+	LogLevel             string   `json:"logLevel"`
 }
 
 func defaultConfig() config {
 	return config{
-		Host:              "0.0.0.0",
-		Port:              8391,
-		ProbeIntervalMs:   15 * 60 * 1000,
-		ProbeTimeoutMs:    5000,
-		HeartbeatMs:       30000,
-		CORSOrigins:       []string{"*"},
-		TrustProxy:        true,
-		MaxNodes:          1000,
-		RegisterPerMinute: 30,
-		LogLevel:          "info",
+		Host:                 "0.0.0.0",
+		Port:                 8391,
+		ProbeIntervalMs:      15 * 60 * 1000,
+		ProbeTimeoutMs:       5000,
+		HeartbeatMs:          30000,
+		CORSOrigins:          []string{"*"},
+		TrustProxy:           true,
+		MaxNodes:             1000,
+		RegisterPerMinute:    30,
+		SignalProxyPerMinute: 120,
+		PublicURL:            "",
+		LogLevel:             "info",
 	}
 }
 
@@ -156,6 +166,16 @@ func applyEnv(cfg *config, env map[string]string) error {
 		}
 		cfg.RegisterPerMinute = number
 	}
+	if value, ok := envString(env, "MASTER_SIGNAL_PROXY_PER_MINUTE"); ok && value != "" {
+		number, err := strconv.Atoi(value)
+		if err != nil || number < 0 {
+			return fmt.Errorf("invalid MASTER_SIGNAL_PROXY_PER_MINUTE: %s", value)
+		}
+		cfg.SignalProxyPerMinute = number
+	}
+	if value, ok := envString(env, "MASTER_PUBLIC_URL"); ok {
+		cfg.PublicURL = strings.TrimRight(strings.TrimSpace(value), "/")
+	}
 	if value, ok := envString(env, "MASTER_LOG_LEVEL"); ok && value != "" {
 		cfg.LogLevel = value
 	}
@@ -195,6 +215,8 @@ func parseOptions(args []string, cfg *config) (bool, bool, error) {
 	flags.BoolVar(&cfg.TrustProxy, "trust-proxy", cfg.TrustProxy, "trust X-Forwarded-For")
 	flags.IntVar(&cfg.MaxNodes, "max-nodes", cfg.MaxNodes, "max nodes")
 	flags.IntVar(&cfg.RegisterPerMinute, "register-per-minute", cfg.RegisterPerMinute, "registrations per IP per minute")
+	flags.IntVar(&cfg.SignalProxyPerMinute, "signal-proxy-per-minute", cfg.SignalProxyPerMinute, "signaling proxy requests per IP per minute")
+	flags.StringVar(&cfg.PublicURL, "public-url", cfg.PublicURL, "public master URL")
 	flags.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	if err := flags.Parse(args); err != nil {
 		return false, false, err
@@ -214,6 +236,15 @@ func parseOptions(args []string, cfg *config) (bool, bool, error) {
 	}
 	if cfg.MaxNodes < 1 {
 		return false, false, fmt.Errorf("max-nodes must be positive")
+	}
+	if cfg.PublicURL != "" {
+		parsed, err := url.Parse(cfg.PublicURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return false, false, fmt.Errorf("public-url must be an http:// or https:// URL")
+		}
+	}
+	if cfg.SignalProxyPerMinute < 0 {
+		return false, false, fmt.Errorf("signal-proxy-per-minute must be >= 0")
 	}
 	return help, showVersion || printConfig, nil
 }
@@ -251,15 +282,17 @@ func main() {
 	logger := logx.New(level, os.Stdout)
 	registry := master.NewRegistry(cfg.MaxNodes)
 	handler, err := master.NewHandler(master.Options{
-		Registry:          registry,
-		HeartbeatInterval: time.Duration(cfg.HeartbeatMs) * time.Millisecond,
-		ProbeTimeout:      time.Duration(cfg.ProbeTimeoutMs) * time.Millisecond,
-		ProbeInterval:     time.Duration(cfg.ProbeIntervalMs) * time.Millisecond,
-		Version:           version,
-		CORSOrigins:       cfg.CORSOrigins,
-		TrustProxy:        cfg.TrustProxy,
-		RegisterPerMinute: cfg.RegisterPerMinute,
-		Logger:            logger,
+		Registry:             registry,
+		HeartbeatInterval:    time.Duration(cfg.HeartbeatMs) * time.Millisecond,
+		ProbeTimeout:         time.Duration(cfg.ProbeTimeoutMs) * time.Millisecond,
+		ProbeInterval:        time.Duration(cfg.ProbeIntervalMs) * time.Millisecond,
+		Version:              version,
+		CORSOrigins:          cfg.CORSOrigins,
+		TrustProxy:           cfg.TrustProxy,
+		RegisterPerMinute:    cfg.RegisterPerMinute,
+		SignalProxyPerMinute: cfg.SignalProxyPerMinute,
+		PublicURL:            cfg.PublicURL,
+		Logger:               logger,
 	})
 	if err != nil {
 		logger.Error("master_start_failed", logx.F("error", err.Error()))

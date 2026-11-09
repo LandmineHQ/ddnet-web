@@ -14,22 +14,25 @@ import (
 
 // Options configures the master HTTP handler.
 type Options struct {
-	Registry          *Registry
-	HeartbeatInterval time.Duration
-	ProbeTimeout      time.Duration
-	ProbeInterval     time.Duration
-	Version           string
-	CORSOrigins       []string
-	TrustProxy        bool
-	RegisterPerMinute int
-	Logger            *logx.Logger
+	Registry             *Registry
+	HeartbeatInterval    time.Duration
+	ProbeTimeout         time.Duration
+	ProbeInterval        time.Duration
+	Version              string
+	CORSOrigins          []string
+	TrustProxy           bool
+	RegisterPerMinute    int
+	SignalProxyPerMinute int
+	PublicURL            string
+	Logger               *logx.Logger
 }
 
 // Handler serves the master API.
 type Handler struct {
-	registry *Registry
-	options  Options
-	limiter  *ipLimiter
+	registry      *Registry
+	options       Options
+	limiter       *ipLimiter
+	signalLimiter *ipLimiter
 }
 
 func NewHandler(options Options) (*Handler, error) {
@@ -51,10 +54,14 @@ func NewHandler(options Options) (*Handler, error) {
 	if len(options.CORSOrigins) == 0 {
 		options.CORSOrigins = []string{"*"}
 	}
+	if options.SignalProxyPerMinute <= 0 {
+		options.SignalProxyPerMinute = 120
+	}
 	return &Handler{
-		registry: options.Registry,
-		options:  options,
-		limiter:  newIPLimiter(options.RegisterPerMinute, time.Minute),
+		registry:      options.Registry,
+		options:       options,
+		limiter:       newIPLimiter(options.RegisterPerMinute, time.Minute),
+		signalLimiter: newIPLimiter(options.SignalProxyPerMinute, time.Minute),
 	}, nil
 }
 
@@ -76,6 +83,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/v1/signal/") {
+		h.handleSignalProxy(w, r)
+		return
+	}
 	switch {
 	case r.URL.Path == "/healthz" && r.Method == http.MethodGet:
 		h.writeJSON(w, http.StatusOK, map[string]any{
@@ -88,6 +99,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	case r.URL.Path == "/v1/serverlist" && r.Method == http.MethodGet:
 		nodes := h.registry.List()
+		for i := range nodes {
+			for j := range nodes[i].Transports {
+				transport := &nodes[i].Transports[j]
+				if transport.Type == "webrtc" {
+					transport.SignalURL = h.publicSignalURL(r, transport.SignalURL)
+				}
+			}
+		}
 		h.writeJSON(w, http.StatusOK, map[string]any{
 			"count":       len(nodes),
 			"generatedAt": time.Now().UTC().Format(time.RFC3339Nano),

@@ -381,8 +381,11 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
     失败项过滤。
   - `POST /v1/unregister`：`{transports:[...]}`，relay 优雅退出时尽力调用。
   - `GET /v1/serverlist`：只返回已验证 + healthy 节点；带 CORS（默认 `*`）。
+    HTTP WebRTC signalUrl 会改写成同源 HTTPS `/v1/signal/<id>/rtc/offer`，relay 无需 TLS。
+  - `POST /v1/signal/<id>/rtc/offer`、`GET /v1/signal/<id>/healthz`、`GET /v1/signal/<id>/api/info`：
+    只代理已注册且 healthy 的 HTTP WebRTC 信令；不允许 `/udp`，不参与 UDP 数据通道。
   - `GET /healthz`、`GET /api/stats`。
-- 前端默认请求 **`https://master.landmine.top/v1/serverlist`**；WebRTC-only 节点用 `signalUrl` 推导连接 base，并加 `?transport=webrtc`；生产也可以改用 nginx 反代 `/relay-master/*`，
+- 前端默认请求 **`https://master.landmine.top/v1/serverlist`**；WebRTC-only 节点用 `signalUrl` 推导连接 base，并加 `?transport=webrtc`；master 返回的 HTTP 信令会被改写为 HTTPS `/v1/signal/<id>` 代理；生产也可以改用 nginx 反代 `/relay-master/*`，
   可用 `<meta name="relay-master-base">` / `window.DDWEB_MASTER_BASE` / `?masterBase=` / `?master=` 调整。
 - relay 注册使用 `transports` 数组；每项是 `{type:"websocket",url}` 或
   `{type:"webrtc",signalUrl,host,udpPort,origin?}`。`host` 是 WebRTC UDP 入口的域名/IP（优先

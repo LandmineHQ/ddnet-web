@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -315,6 +316,102 @@ func TestHTTPRegisterWebRTCOnly(t *testing.T) {
 	_ = json.NewDecoder(listResponse.Body).Decode(&list)
 	if list.Count != 1 || len(list.Servers[0].Transports) != 1 || list.Servers[0].Transports[0].Type != "webrtc" {
 		t.Fatalf("webrtc-only serverlist = %+v", list)
+	}
+}
+
+func TestServerlistRewritesHTTPWebRTCToSignalProxy(t *testing.T) {
+	registry := NewRegistry(10)
+	transport := Transport{
+		Type: "webrtc", SignalURL: "http://127.0.0.1:12345/rtc/offer",
+		Host: "relay.example.com", UDPPort: 443,
+	}
+	key, _ := NodeKey([]Transport{transport})
+	if _, err := registry.Register(Node{Name: "rtc-http", Transports: []Transport{transport}}); err != nil {
+		t.Fatal(err)
+	}
+	registry.MarkTransportVerified(key, transport, time.Now())
+	handler, _ := NewHandler(Options{Registry: registry, PublicURL: "https://master.example.com"})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	response, err := http.Get(server.URL + "/v1/serverlist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var list struct {
+		Servers []Node `json:"servers"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Servers) != 1 || len(list.Servers[0].Transports) != 1 {
+		t.Fatalf("list = %+v", list)
+	}
+	want := "https://master.example.com/v1/signal/" + SignalID(transport.SignalURL) + "/rtc/offer"
+	if got := list.Servers[0].Transports[0].SignalURL; got != want {
+		t.Fatalf("signalUrl = %q, want %q", got, want)
+	}
+}
+
+func TestSignalProxyForHTTPWebRTC(t *testing.T) {
+	var gotOrigin, gotToken, gotTarget string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin = r.Header.Get("Origin")
+		gotToken = r.Header.Get("X-Relay-Token")
+		gotTarget = r.URL.Query().Get("target")
+		switch r.URL.Path {
+		case "/rtc/offer":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"type":"answer","sdp":"v=0\r\nm=application"}`))
+		case "/healthz":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/info":
+			_, _ = w.Write([]byte(`{"name":"upstream"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	transport := Transport{
+		Type: "webrtc", SignalURL: upstream.URL + "/rtc/offer",
+		Host: "relay.example.com", UDPPort: 443,
+	}
+	registry := NewRegistry(10)
+	key, _ := NodeKey([]Transport{transport})
+	if _, err := registry.Register(Node{Name: "rtc-http", Transports: []Transport{transport}}); err != nil {
+		t.Fatal(err)
+	}
+	registry.MarkTransportVerified(key, transport, time.Now())
+	handler, _ := NewHandler(Options{Registry: registry, PublicURL: "https://master.example.com"})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	id := SignalID(transport.SignalURL)
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/signal/"+id+"/rtc/offer?target=1.2.3.4%3A8303", strings.NewReader(`{"type":"offer","sdp":"v=0"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://play.example.com")
+	request.Header.Set("X-Relay-Token", "secret")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"answer"`) {
+		t.Fatalf("proxy response status=%d body=%s", response.StatusCode, body)
+	}
+	if gotOrigin != "https://play.example.com" || gotToken != "secret" || gotTarget != "1.2.3.4:8303" {
+		t.Fatalf("forwarded origin=%q token=%q target=%q", gotOrigin, gotToken, gotTarget)
+	}
+	health, _ := http.Get(server.URL + "/v1/signal/" + id + "/healthz")
+	healthBody, _ := io.ReadAll(health.Body)
+	health.Body.Close()
+	if health.StatusCode != http.StatusOK || string(healthBody) != `{"ok":true}` {
+		t.Fatalf("health proxy = %d %s", health.StatusCode, healthBody)
 	}
 }
 
