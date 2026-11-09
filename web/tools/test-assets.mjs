@@ -340,6 +340,77 @@ await test('abort 中断下载并标记错误', async () => {
   assert.equal(result.ok, false);
 });
 
+await test('主源失败时使用 gh-proxy 镜像并通过 sha256', async () => {
+  const fixture = await makeFixture();
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    const parsed = new URL(String(url));
+    calls.push(parsed.href);
+    if (parsed.pathname === '/manifest.json' && parsed.host === 'test.local') {
+      return new Response(JSON.stringify(fixture.manifest), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (parsed.host === 'test.local') return new Response('missing', { status: 404 });
+    if (parsed.host === 'mirror.test') {
+      const name = parsed.pathname.replace(/^\//, '');
+      const bytes = fixture.contents[name];
+      if (!bytes) return new Response('missing', { status: 404 });
+      if (options.method === 'HEAD') return new Response(null, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
+      return new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
+    }
+    return new Response('missing', { status: 404 });
+  };
+  const manager = createAssetManager({
+    baseUrl: 'http://test.local/',
+    mirrorBases: ['https://mirror.test/'],
+    fetchImpl,
+    cacheStorage: createMemoryCaches(),
+    cryptoImpl: globalThis.crypto,
+    progressIntervalMs: 0,
+    startupTimeoutMs: 1000,
+    stallTimeoutMs: 1000,
+  });
+  await manager.init();
+  const result = await manager.download();
+  assert.equal(result.ok, true, JSON.stringify(result.snapshot.lastError));
+  assert.ok(calls.some((url) => url.indexOf('https://mirror.test/DDNet.data') === 0));
+  const data = manager.snapshot().items.find((item) => item.name === 'DDNet.data');
+  assert.equal(data.source, 'mirror.test');
+});
+
+await test('主 manifest 失败时镜像 manifest 仍可校验资产', async () => {
+  const fixture = await makeFixture({ salt: 'mirror-manifest' });
+  const fetchImpl = async (url, options = {}) => {
+    const parsed = new URL(String(url));
+    if (parsed.host === 'test.local') return new Response('missing', { status: 404 });
+    if (parsed.host === 'mirror.test') {
+      const name = parsed.pathname.replace(/^\//, '');
+      if (name === 'manifest.json') {
+        return new Response(JSON.stringify(fixture.manifest), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      const bytes = fixture.contents[name];
+      if (!bytes) return new Response('missing', { status: 404 });
+      if (options.method === 'HEAD') return new Response(null, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
+      return new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
+    }
+    return new Response('missing', { status: 404 });
+  };
+  const manager = createAssetManager({
+    baseUrl: 'http://test.local/',
+    mirrorBases: ['https://mirror.test/'],
+    fetchImpl,
+    cacheStorage: createMemoryCaches(),
+    cryptoImpl: globalThis.crypto,
+    progressIntervalMs: 0,
+    startupTimeoutMs: 1000,
+    stallTimeoutMs: 1000,
+  });
+  const snap = await manager.init();
+  assert.equal(snap.usingFallbackManifest, false);
+  assert.equal(snap.manifestSource, 'mirror.test');
+  const result = await manager.download();
+  assert.equal(result.ok, true, JSON.stringify(result.snapshot.lastError));
+});
+
 console.log('');
 console.log('通过 ' + passed + ' / ' + (passed + failed) + (failed ? '，失败 ' + failed : ''));
 process.exit(failed ? 1 : 0);

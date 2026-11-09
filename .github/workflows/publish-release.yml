@@ -81,6 +81,12 @@ jobs:
           cp assets/bin/relay-master-linux-amd64 assets/out/relay-master-linux-amd64
           chmod +x assets/out/relay-linux-amd64 assets/out/relay-master-linux-amd64
           tar -C assets/web-dist -czf assets/out/ddnet-web-dist.tar.gz .
+          # Raw assets are needed by the browser's multi-CDN fallback (gh-proxy
+          # mirrors the latest GitHub Release). Keep them as individual assets.
+          for f in DDNet.js DDNet.wasm DDNet.data manifest.json; do
+            test -s "assets/web-dist/$f"
+            cp "assets/web-dist/$f" "assets/out/$f"
+          done
           ls -lh assets/out
 
       - name: Get build run commit

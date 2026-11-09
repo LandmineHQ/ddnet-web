@@ -1764,9 +1764,10 @@ function renderProgressRows(container, names) {
     if (!item) continue;
     const percent = item.state === 'cached' ? 100 : item.percent || 0;
     let stats = '';
-    if (item.state === 'downloading') stats = formatBytes(item.received) + ' / ' + formatBytes(item.size) + ' · ' + formatSpeed(item.speed);
-    else if (item.state === 'verifying') stats = '正在校验 sha256…';
-    else if (item.state === 'cached') stats = formatBytes(item.size) + ' · 完成';
+    const via = item.source ? ' · via ' + item.source : '';
+    if (item.state === 'downloading') stats = formatBytes(item.received) + ' / ' + formatBytes(item.size) + ' · ' + formatSpeed(item.speed) + via;
+    else if (item.state === 'verifying') stats = '正在校验 sha256…' + via;
+    else if (item.state === 'cached') stats = formatBytes(item.size) + ' · 完成' + via;
     else if (item.state === 'error') stats = item.error || '失败';
     else stats = formatBytes(item.size) + ' · 等待';
     const fill = el('div', {
