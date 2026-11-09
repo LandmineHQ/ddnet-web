@@ -123,6 +123,6 @@ dist/web/
 
 ## 资源并行下载
 
-资源下载器优先使用 HTTP Range 分块：从 1 个并发 worker 快速提升到 8 个，之后逐个增加并比较总吞吐；只要比上一次高就保留，没提升就退回上一次并发并稍后重试（默认最多 16 个），
-服务器不支持 Range 时回退单流。所有块最终都通过 `manifest.json` 的 size + sha256 校验后才写入
-Cache Storage。
+资源下载器使用单线程 HTTP Range 下载，并每约 1MB 将分块写入 Cache Storage 的 `-parts-` 缓存。
+刷新/中断后从已持久化 offset 继续；服务器不支持 Range 时从 0 单流下载。最终通过
+`manifest.json` 的 size + sha256 校验后才写入正式缓存。

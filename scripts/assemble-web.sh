@@ -10,8 +10,17 @@ DEFAULT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${ROOT:-$DEFAULT_ROOT}"
 DIST="${DIST:-$ROOT/dist/web}"
 WEB="${WEB:-$ROOT/web}"
+WASM_DIR="${WASM_DIR:-}"
 
 mkdir -p "$DIST"
+if [ -n "$WASM_DIR" ]; then
+	echo "== copying WASM artifacts from $WASM_DIR"
+	for f in DDNet.js DDNet.wasm DDNet.data; do
+		test -s "$WASM_DIR/$f"
+		cp -a "$WASM_DIR/$f" "$DIST/$f"
+		echo "   + $f"
+	done
+fi
 
 echo "== copying frontend shell from $WEB"
 for item in index.html style.css app.js src assets serve.mjs README.md coi-serviceworker.js; do

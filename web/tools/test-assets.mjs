@@ -91,13 +91,19 @@ function createMemoryCaches() {
     const store = new Map();
     return {
       async match(url) {
-        return store.get(String(url)) || null;
+        const key = typeof url === 'string' ? url : url.url;
+        return store.get(key) || null;
       },
       async put(url, response) {
-        store.set(String(url), response);
+        const key = typeof url === 'string' ? url : url.url;
+        store.set(key, response);
       },
       async delete(url) {
-        return store.delete(String(url));
+        const key = typeof url === 'string' ? url : url.url;
+        return store.delete(key);
+      },
+      async keys() {
+        return Array.from(store.keys()).map((url) => new Request(url));
       },
       _store: store,
     };
@@ -340,47 +346,47 @@ await test('abort 中断下载并标记错误', async () => {
   assert.equal(result.ok, false);
 });
 
-await test('Range 分块下载从 1 并发逐步增加并校验', async () => {
-  const FILES2 = ['DDNet.js', 'DDNet.wasm', 'DDNet.data'];
+await test('单线程断点续传：刷新后从 Range offset 继续', async () => {
+  const data = new Uint8Array(2 * 1024 * 1024 + 77);
+  for (let i = 0; i < data.length; i += 1) data[i] = i % 233;
   const contents = {
     'DDNet.js': new TextEncoder().encode('small-js'),
     'DDNet.wasm': new TextEncoder().encode('small-wasm'),
-    'DDNet.data': new Uint8Array(8 * 1024 * 1024 + 123),
+    'DDNet.data': data,
   };
-  for (let i = 0; i < contents['DDNet.data'].length; i += 1) contents['DDNet.data'][i] = i % 251;
   const files = {};
-  for (const name of FILES2) {
-    files[name] = {
-      sha256: await sha256Hex(contents[name], globalThis.crypto),
-      size: contents[name].byteLength,
-    };
+  for (const name of ['DDNet.js', 'DDNet.wasm', 'DDNet.data']) {
+    files[name] = { sha256: await sha256Hex(contents[name], globalThis.crypto), size: contents[name].byteLength };
   }
-  const manifest = { version: 'range-test', files };
-  let active = 0;
-  let peak = 0;
+  const manifest = { version: 'resume-test', files };
+  const caches = createMemoryCaches();
+  const offset = 1024 * 1024;
+  const partsName = CACHE_PREFIX + 'resume-test-parts-' + encodeURIComponent('DDNet.data') + '-' + files['DDNet.data'].sha256.slice(0, 12);
+  const parts = await caches.open(partsName);
+  await parts.put(new Request('http://test.local/DDNet.data?ddweb-part=0'), new Response(data.slice(0, offset), {
+    headers: { 'content-length': String(offset), 'x-ddweb-size': String(offset) },
+  }));
   const rangeCalls = [];
   const fetchImpl = async (url, options = {}) => {
-    const pathname = new URL(String(url), 'http://test.local/').pathname;
-    if (pathname === '/manifest.json') {
+    const parsed = new URL(String(url), 'http://test.local/');
+    if (parsed.pathname === '/manifest.json') {
       return new Response(JSON.stringify(manifest), { status: 200, headers: { 'content-type': 'application/json' } });
     }
-    const name = pathname.replace(/^\//, '');
+    const name = parsed.pathname.replace(/^\//, '');
     const bytes = contents[name];
     if (!bytes) return new Response('missing', { status: 404 });
     const range = options.headers && options.headers.Range;
     if (range) {
-      const match = /bytes=(\d+)-(\d+)/.exec(String(range));
-      if (!match) return new Response('bad range', { status: 400 });
-      const start = Number(match[1]);
-      const end = Math.min(Number(match[2]), bytes.byteLength - 1);
-      rangeCalls.push([start, end]);
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      active -= 1;
-      return new Response(bytes.slice(start, end + 1), {
+      const match = /bytes=(\d+)-/.exec(String(range));
+      const start = match ? Number(match[1]) : 0;
+      rangeCalls.push(start);
+      return new Response(bytes.slice(start), {
         status: 206,
-        headers: { 'content-type': 'application/octet-stream', 'content-range': 'bytes ' + start + '-' + end + '/' + bytes.byteLength, 'content-length': String(end - start + 1) },
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-range': 'bytes ' + start + '-' + (bytes.byteLength - 1) + '/' + bytes.byteLength,
+          'content-length': String(bytes.byteLength - start),
+        },
       });
     }
     return new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
@@ -388,24 +394,20 @@ await test('Range 分块下载从 1 并发逐步增加并校验', async () => {
   const manager = createAssetManager({
     baseUrl: 'http://test.local/',
     fetchImpl,
-    cacheStorage: createMemoryCaches(),
+    cacheStorage: caches,
     cryptoImpl: globalThis.crypto,
     progressIntervalMs: 0,
-    maxParallel: 16,
-    minParallel: 8,
-    rampIntervalMs: 10,
-    probeIntervalMs: 30,
     startupTimeoutMs: 2000,
     stallTimeoutMs: 2000,
   });
-  await manager.init();
+  const snap = await manager.init();
+  const partial = snap.items.find((item) => item.name === 'DDNet.data');
+  assert.equal(partial.received, offset);
   const result = await manager.download();
   assert.equal(result.ok, true, JSON.stringify(result.snapshot.lastError));
-  assert.ok(rangeCalls.length >= 2, 'expected multiple range requests');
-  assert.ok(peak >= 8, 'expected at least 8 concurrent range workers, peak=' + peak);
+  assert.ok(rangeCalls.includes(offset), 'should request Range from resume offset');
   assert.equal(manager.isComplete(), true);
 });
-
 console.log('');
 console.log('通过 ' + passed + ' / ' + (passed + failed) + (failed ? '，失败 ' + failed : ''));
 process.exit(failed ? 1 : 0);

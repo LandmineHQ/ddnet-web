@@ -38,3 +38,6 @@
 *.pem
 *.key
 *.log
+
+# Cached wasm build output (CI)
+/wasm-dist/

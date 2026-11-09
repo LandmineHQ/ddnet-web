@@ -37,7 +37,15 @@ jobs:
       - name: Checkout project
         uses: actions/checkout@v4
 
+      - name: Restore cached WASM artifacts
+        id: wasm-cache
+        uses: actions/cache@v4
+        with:
+          path: wasm-dist
+          key: ddnet-wasm-a02cf38-${{ hashFiles('patches/ddnet-web-client.patch', 'build/build-wasm.sh', 'build/Dockerfile', 'build/compose.yml', 'scripts/wasm-build-compose.sh') }}
+
       - name: Checkout pinned DDNet + apply patch
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -61,11 +69,12 @@ jobs:
         run: npm ci --prefix docs-site --no-audit --no-fund
 
       - name: Build WASM
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           SOURCE_DIR: ${{ github.workspace }}/ddnet-dev
           BUILD_DIR: ${{ github.workspace }}/build/wasm-build-ci
-          DIST_DIR: ${{ github.workspace }}/dist/web
+          DIST_DIR: ${{ github.workspace }}/wasm-dist
           CARGO_HOME_HOST: ${{ github.workspace }}/build/cargo-home
           LOG_DIR: ${{ github.workspace }}/build/logs
           BUILD_TYPE: Release
@@ -80,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ROOT="$GITHUB_WORKSPACE" DIST="$GITHUB_WORKSPACE/dist/web" ./scripts/assemble-web.sh
+          ROOT="$GITHUB_WORKSPACE" DIST="$GITHUB_WORKSPACE/dist/web" WASM_DIR="$GITHUB_WORKSPACE/wasm-dist" ./scripts/assemble-web.sh
           test -s dist/web/manifest.json
           test -s dist/web/DDNet.wasm
           test -s dist/web/wiki/index.html

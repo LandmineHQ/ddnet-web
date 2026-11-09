@@ -60,7 +60,7 @@
 ### 前端与运维
 
 - **零构建前端**：原生 ESM，HTML/CSS/JS 直接部署；资源下载带 sha256 校验与 Cache Storage。
-- **并行资源下载**：HTTP Range 分块，先快速提升到 8 个并发，之后逐个增加并比较总吞吐；只要比上一次高就保留，没提升就退回上一次并发并稍后重试（最多 16 个）；不支持 Range 时回退单流，最终仍校验 size + sha256。
+- **单线程断点续传**：资源下载用单个 Range 流，分块持久化到 Cache Storage；刷新/中断后从已有 offset 继续，最终仍校验 size + sha256。
 - **默认 master 域名**：前端默认请求 `https://master.landmine.top/v1/serverlist`；本地开发用本机 `8391`，LAN HTTPS dev 走同源 `/relay-master`，也可用 meta/window/query 覆盖。
 - **可观测性**：`/api/info`、`/api/stats`、`/healthz`、master `/api/stats`，HUD 显示 WebRTC/WS 传输方式和流量。
 - **生产部署无 Caddy**：`compose.yml` 只启动 Go relay + relay master（回环端口），TLS/WSS/静态站点由 nginx 终止。
@@ -357,13 +357,12 @@ flowchart LR
 
 ### 资源并行下载
 
-`DDNet.data` / `DDNet.wasm` 使用 HTTP Range 分块下载：
+`DDNet.data` / `DDNet.wasm` 使用单线程 Range 下载：
 
-- 先探测服务器是否支持 `206 Content-Range`
-- 从 **1 个 worker** 起步，快速提升到 **8 个并发**
-- 8 个之后每次只增加一个 worker；总速度比上一次高就保留并继续增加，没有提升就退回上一次并发，稍后重新试探（默认上限 16）
-- 不支持 Range 或分块失败时自动回退单流下载
-- 最终仍按 manifest 的 size + sha256 校验，再写入 Cache Storage
+- 每完成约 1MB 写入 Cache Storage 的 `-parts-` 缓存
+- 刷新或中断后，按已持久化 offset 继续 `Range: bytes=<offset>-`
+- 服务器不支持 Range 时自动从 0 重下
+- 最终仍按 manifest 的 size + sha256 校验，再写入正式缓存
 
 不需要 gh-proxy 或第三方镜像；资源从同源站点直接下载。
 ### Relay
@@ -447,6 +446,14 @@ docker compose -f compose.test.yml --profile test run --rm -T \
 ### 自动 build
 
 [.github/workflows/build.yml](.github/workflows/build.yml) 在 push `main`/`master` 或手动触发时（仅修改 `.github/**` 不触发）：
+
+WASM 构建产物按 patch/build 脚本 hash 缓存：
+
+```text
+ddnet-wasm-a02cf38-<hashFiles(patches, build scripts)>
+```
+
+只有 cache miss（DDNet 补丁/构建脚本变化）才 clone 和重编 WASM；单纯改 `web/`、`docs-site/` 会直接复用缓存。
 
 - 构建 DDNet WASM + web shell + VitePress wiki → artifact `web-dist`
 - 构建 `relay-linux-amd64` / `relay-master-linux-amd64` → 两个二进制 artifact

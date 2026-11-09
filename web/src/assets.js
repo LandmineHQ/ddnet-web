@@ -108,15 +108,6 @@ export function createAssetManager(options = {}) {
   const onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : () => {};
   const startupTimeoutMs = Number.isFinite(options.startupTimeoutMs) ? options.startupTimeoutMs : 5000;
   const stallTimeoutMs = Number.isFinite(options.stallTimeoutMs) ? options.stallTimeoutMs : 15000;
-  const rampIntervalMs = Number.isFinite(options.rampIntervalMs) ? options.rampIntervalMs : 300;
-  const probeIntervalMs = Number.isFinite(options.probeIntervalMs) ? options.probeIntervalMs : 1500;
-  const minParallelOption = Number.isFinite(options.minParallel) ? options.minParallel : 8;
-  const maxParallelOption = Number.isFinite(options.maxParallel) ? options.maxParallel : 16;
-  // No fixed percentage: adding one worker to N connections has diminishing
-  // returns, so any measurable throughput increase is a valid improvement.
-  // The option remains for deployments that want extra noise tolerance.
-  const speedGainThreshold = Number.isFinite(options.speedGainThreshold) && options.speedGainThreshold >= 1
-    ? options.speedGainThreshold : 1.0;
   const manifestTimeoutMs = Number.isFinite(options.manifestTimeoutMs) ? options.manifestTimeoutMs : 5000;
 
   const state = {
@@ -281,12 +272,14 @@ export function createAssetManager(options = {}) {
         try {
           const keys = await cacheStorage.keys();
           for (const key of keys) {
-            if (typeof key === 'string' && key.indexOf(CACHE_PREFIX) === 0 && key !== state.cacheName) {
-              try {
-                await cacheStorage.delete(key);
-              } catch (deleteError) {
-                // 清理旧缓存失败不影响主流程
-              }
+            if (typeof key !== 'string' || key.indexOf(CACHE_PREFIX) !== 0) continue;
+            const isParts = key.indexOf('-parts-') >= 0;
+            const keepParts = isParts && Array.from(state.items.values()).some((item) => key === partCacheName(item));
+            if (keepParts || key === state.cacheName) continue;
+            try {
+              await cacheStorage.delete(key);
+            } catch (deleteError) {
+              // 清理旧缓存失败不影响主流程
             }
           }
         } catch (keysError) {
@@ -441,100 +434,100 @@ export function createAssetManager(options = {}) {
     }
   }
 
-  function rangeUnsupported(message) {
-    const error = new Error(message || 'server does not support range requests');
-    error.name = 'RangeUnsupportedError';
-    return error;
+  function abortedErrorMsg() {
+    return abortedError();
   }
 
-  function contentRange(header) {
-    const match = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(String(header || '').trim());
-    if (!match) return null;
-    const start = Number(match[1]);
-    const end = Number(match[2]);
-    const total = match[3] === '*' ? 0 : Number(match[3]);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return null;
-    return { start, end, total };
+  function partCacheName(item) {
+    const sha = item.sha256 ? item.sha256.slice(0, 12) : 'nosha';
+    return state.cacheName + '-parts-' + encodeURIComponent(item.name) + '-' + sha;
   }
 
-  async function fetchRange(url, start, end, signal, onProgress) {
-    let lastError = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const controller = new AbortController();
-      const onAbort = () => controller.abort();
-      if (signal) {
-        if (signal.aborted) throw abortedError();
-        signal.addEventListener('abort', onAbort, { once: true });
-      }
-      let stall = resetStall(null, controller);
-      try {
-        const response = await fetchImpl(url, {
-          cache: 'no-store',
-          signal: controller.signal,
-          headers: { Range: 'bytes=' + start + '-' + end },
-        });
-        if (response.status !== 206) {
-          if (response.status === 200) throw rangeUnsupported('range request returned HTTP 200');
-          throw new Error('HTTP ' + response.status);
-        }
-        const range = contentRange(response.headers.get('content-range'));
-        if (!range || range.start !== start || range.end !== end) {
-          throw rangeUnsupported('invalid Content-Range: ' + (response.headers.get('content-range') || 'missing'));
-        }
-        const expected = end - start + 1;
-        const buffer = new Uint8Array(expected);
-        let offset = 0;
-        let attemptBytes = 0;
-        if (response.body && typeof response.body.getReader === 'function') {
-          const reader = response.body.getReader();
-          for (;;) {
-            const result = await reader.read();
-            if (result.done) break;
-            if (result.value) {
-              if (offset + result.value.byteLength > expected) {
-                throw new Error('range response exceeded requested size');
-              }
-              buffer.set(result.value, offset);
-              offset += result.value.byteLength;
-              if (onProgress) onProgress(result.value.byteLength);
-              attemptBytes += result.value.byteLength;
-              stall = resetStall(stall, controller);
-            }
-          }
-        } else {
-          const bytes = new Uint8Array(await response.arrayBuffer());
-          if (bytes.byteLength !== expected) throw new Error('range response size mismatch');
-          buffer.set(bytes);
-          offset = expected;
-          if (onProgress) onProgress(expected);
-          attemptBytes = expected;
-        }
-        if (offset !== expected) throw new Error('range response ended early (' + offset + '/' + expected + ')');
-        return buffer;
-      } catch (error) {
-        if (attemptBytes && onProgress) onProgress(-attemptBytes);
-        if (error && error.name === 'RangeUnsupportedError') throw error;
-        if (signal && signal.aborted) throw abortedError();
-        lastError = error;
-      } finally {
-        if (stall) clearTimeout(stall);
-        if (signal) signal.removeEventListener('abort', onAbort);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+  function partURL(item, offset) {
+    const url = new URL(item.url, baseUrl);
+    url.searchParams.set('ddweb-part', String(offset));
+    return url.href;
+  }
+
+  async function openParts(item) {
+    if (!state.cacheAvailable || !cacheStorage || typeof cacheStorage.open !== 'function') return null;
+    try {
+      return await cacheStorage.open(partCacheName(item));
+    } catch (error) {
+      return null;
     }
-    throw lastError || new Error('range request failed');
   }
 
-  function resetStall(timer, controller) {
-    if (timer) clearTimeout(timer);
-    if (stallTimeoutMs <= 0) return null;
-    return setTimeout(() => controller.abort(), stallTimeoutMs);
+  async function clearParts(cache) {
+    if (!cache) return;
+    try {
+      const keys = await cache.keys();
+      await Promise.all(keys.map((key) => cache.delete(key).catch(() => null)));
+    } catch (error) {
+      // resume cache cleanup is best-effort
+    }
   }
 
-  async function downloadRanged(item, url) {
-    const total = Number(item.expectedSize || item.size);
-    // Small files are not worth the extra request overhead.
-    if (!Number.isFinite(total) || total < 1024 * 1024) throw rangeUnsupported('file too small');
+  async function readParts(item, cache, total, withBytes) {
+    if (!cache) return { offset: 0, bytes: withBytes ? new Uint8Array(total) : null };
+    let keys = [];
+    try {
+      keys = await cache.keys();
+    } catch (error) {
+      return { offset: 0, bytes: withBytes ? new Uint8Array(total) : null };
+    }
+    const entries = [];
+    for (const key of keys) {
+      let offset = NaN;
+      try {
+        offset = Number(new URL(key.url).searchParams.get('ddweb-part'));
+      } catch (error) {
+        offset = NaN;
+      }
+      if (!Number.isFinite(offset) || offset < 0 || offset >= total) continue;
+      entries.push({ key, offset });
+    }
+    entries.sort((a, b) => a.offset - b.offset);
+    const output = withBytes ? new Uint8Array(total) : null;
+    let next = 0;
+    for (const entry of entries) {
+      if (entry.offset !== next) continue;
+      const response = await cache.match(entry.key);
+      if (!response) break;
+      const size = Number(response.headers.get('x-ddweb-size') || 0);
+      if (!Number.isFinite(size) || size <= 0 || next + size > total) break;
+      if (withBytes) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength !== size) break;
+        output.set(bytes, next);
+      }
+      next += size;
+    }
+    return { offset: next, bytes: output };
+  }
+
+  async function resumeOffset(item) {
+    if (!item.expectedSize || !item.sha256) return 0;
+    const cache = await openParts(item);
+    if (!cache) return 0;
+    const info = await readParts(item, cache, item.expectedSize, false);
+    return info.offset;
+  }
+
+  async function downloadResumable(item, url) {
+    const total = Number(item.expectedSize || 0);
+    if (!total || !item.sha256) return downloadStream(item, url);
+
+    const parts = await openParts(item);
+    const restored = await readParts(item, parts, total, true);
+    let offset = restored.offset;
+    const output = restored.bytes || new Uint8Array(total);
+    item.received = offset;
+    item.state = 'downloading';
+    emit('progress', item);
+
+    if (offset >= total) return output;
+
     const controller = new AbortController();
     const external = abortController ? abortController.signal : null;
     let externalAborted = false;
@@ -546,174 +539,105 @@ export function createAssetManager(options = {}) {
       if (external.aborted) throw abortedError();
       external.addEventListener('abort', onExternalAbort, { once: true });
     }
-    try {
-      const probeTimer = setTimeout(() => controller.abort(), startupTimeoutMs > 0 ? startupTimeoutMs : 5000);
-      let probe;
-      try {
-        probe = await fetchImpl(url, {
-          cache: 'no-store',
-          signal: controller.signal,
-          headers: { Range: 'bytes=0-0' },
-        });
-      } finally {
-        clearTimeout(probeTimer);
-      }
-      if (probe.status !== 206) {
-        if (probe.body && probe.body.cancel) probe.body.cancel();
-        throw rangeUnsupported('server does not support range requests');
-      }
-      const probeRange = contentRange(probe.headers.get('content-range'));
-      if (!probeRange || (probeRange.total && probeRange.total !== total)) {
-        if (probe.body && probe.body.cancel) probe.body.cancel();
-        throw rangeUnsupported('unexpected range metadata');
-      }
-      if (probe.body && probe.body.cancel) probe.body.cancel();
 
-      const requestedMax = Number(maxParallelOption);
-      const maxParallel = Math.max(1, Math.min(
-        Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : 16,
-        16
-      ));
-      const requestedMin = Number(minParallelOption);
-      const minParallel = Math.max(1, Math.min(
-        maxParallel,
-        Number.isFinite(requestedMin) && requestedMin > 0 ? requestedMin : 8
-      ));
-      // More chunks than workers so the ramp has room to expand.
-      const chunkSize = Math.max(
-        256 * 1024,
-        Math.min(4 * 1024 * 1024, Math.ceil(total / (maxParallel * 3)))
-      );
-      const chunkCount = Math.ceil(total / chunkSize);
-      if (chunkCount <= 1 || maxParallel === 1) {
-        return await downloadStream(item, url);
-      }
-
-      const output = new Uint8Array(total);
-      let next = 0;
-      let active = 0;
-      let target = 1;
-      let received = 0;
-      let lastEmitAt = 0;
-      let lastProbeAt = 0;
-      let lastProbeBytes = 0;
-      let baselineSpeed = 0;
-      let probeFromTarget = 0;
-      let phase = 'ramp';
-      let settled = false;
-      let resolveDone;
-      let rejectDone;
-      const done = new Promise((resolve, reject) => {
-        resolveDone = resolve;
-        rejectDone = reject;
-      });
-      const workers = [];
-      const finishIfDone = () => {
-        if (!settled && next >= chunkCount && active === 0) {
-          settled = true;
-          resolveDone(output);
-        }
-      };
-      const progress = (bytes) => {
-        received = Math.max(0, received + bytes);
-        item.received = received;
-        updateSpeed(item, received);
-        const at = now();
-        if (at - lastEmitAt >= progressIntervalMs) {
-          lastEmitAt = at;
-          emit('progress', item);
-        }
-      };
-      const spawn = () => {
-        while (!settled && active < target && active < chunkCount) {
-          active += 1;
-          const worker = (async () => {
-            for (;;) {
-              if (controller.signal.aborted) throw abortedError();
-              const index = next;
-              next += 1;
-              if (index >= chunkCount) break;
-              const start = index * chunkSize;
-              const end = Math.min(total - 1, start + chunkSize - 1);
-              const bytes = await fetchRange(url, start, end, controller.signal, progress);
-              output.set(bytes, start);
-            }
-          })();
-          workers.push(worker.then(() => {
-            active -= 1;
-            finishIfDone();
-          }, (error) => {
-            active -= 1;
-            if (!settled) {
-              settled = true;
-              rejectDone(error);
-            }
-          }));
-        }
-      };
-      const ramp = setInterval(() => {
-        if (settled) return;
-        if (target < minParallel) {
-          target += 1;
-          spawn();
-          return;
-        }
-        const at = Date.now();
-        if (phase === 'ramp') {
-          phase = 'baseline';
-          lastProbeAt = at;
-          lastProbeBytes = received;
-          return;
-        }
-        if (phase === 'done') return;
-        const elapsed = at - lastProbeAt;
-        if (elapsed < probeIntervalMs) return;
-        const speed = (received - lastProbeBytes) * 1000 / elapsed;
-        if (phase === 'baseline') {
-          baselineSpeed = speed;
-          if (target >= maxParallel) {
-            phase = 'done';
-            return;
-          }
-          probeFromTarget = target;
-          target += 1;
-          phase = 'probing';
-        } else if (phase === 'probing') {
-          // No fixed 2% gate: even 1% on a high-concurrency download is a
-          // real improvement. Continue while total throughput increases.
-          if (speed > baselineSpeed * speedGainThreshold) {
-            baselineSpeed = speed;
-            if (target < maxParallel) {
-              probeFromTarget = target;
-              target += 1;
-            } else {
-              phase = 'done';
-            }
-          } else {
-            // This attempt did not improve throughput. Revert to the last
-            // good concurrency, measure a fresh baseline, and probe again
-            // later instead of permanently stopping the ramp.
-            target = probeFromTarget;
-            phase = 'baseline';
-          }
-        }
-        lastProbeAt = at;
-        lastProbeBytes = received;
-        spawn();
-      }, rampIntervalMs);
-      spawn();
-      try {
-        const bytes = await done;
-        return bytes;
-      } finally {
-        clearInterval(ramp);
+    const startedAt = Date.now();
+    let firstByteAt = offset > 0 ? startedAt : 0;
+    let lastProgressAt = startedAt;
+    let timedOut = false;
+    const timer = setInterval(() => {
+      if (!firstByteAt && Date.now() - startedAt > startupTimeoutMs) {
+        timedOut = true;
+        controller.abort();
+      } else if (Date.now() - lastProgressAt > stallTimeoutMs) {
+        timedOut = true;
         controller.abort();
       }
+    }, 1000);
+
+    let persistOffset = offset;
+    let pendingParts = [];
+    let pendingBytes = 0;
+    const persist = async () => {
+      if (!parts || pendingBytes <= 0) return;
+      const data = concatChunks(pendingParts, pendingBytes);
+      try {
+        await parts.put(new Request(partURL(item, persistOffset)), new Response(data, {
+          headers: { 'x-ddweb-size': String(data.byteLength) },
+        }));
+        persistOffset += data.byteLength;
+      } catch (error) {
+        // Continue downloading; a failed part only loses resume granularity.
+      }
+      pendingParts = [];
+      pendingBytes = 0;
+    };
+
+    try {
+      const headers = {};
+      if (offset > 0) headers.Range = 'bytes=' + offset + '-';
+      const response = await fetchImpl(url, { cache: 'no-store', signal: controller.signal, headers });
+      if (response.status === 200 && offset > 0) {
+        // Server ignored Range; discard the saved prefix and restart cleanly.
+        await clearParts(parts);
+        output.fill(0);
+        offset = 0;
+        persistOffset = 0;
+        item.received = 0;
+      } else if (response.status !== 200 && response.status !== 206) {
+        throw new Error(item.name + ' 下载失败：HTTP ' + response.status);
+      } else if (response.status === 206) {
+        const header = response.headers.get('content-range') || '';
+        const match = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(header.trim());
+        if (!match || Number(match[1]) !== offset) {
+          throw new Error(item.name + ' Range 响应不匹配');
+        }
+        if (match[3] !== '*' && Number(match[3]) !== total) {
+          throw new Error(item.name + ' Range 总大小不匹配');
+        }
+      }
+
+      let received = offset;
+      if (response.body && typeof response.body.getReader === 'function') {
+        const reader = response.body.getReader();
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          if (!part.value) continue;
+          firstByteAt = Date.now();
+          lastProgressAt = Date.now();
+          const bytes = part.value;
+          if (received + bytes.byteLength > total) throw new Error(item.name + ' 响应超过预期大小');
+          output.set(bytes, received);
+          received += bytes.byteLength;
+          item.received = received;
+          updateSpeed(item, received);
+          pendingParts.push(bytes);
+          pendingBytes += bytes.byteLength;
+          if (pendingBytes >= 1024 * 1024) await persist();
+          emit('progress', item);
+        }
+      } else {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (offset + bytes.byteLength > total) throw new Error(item.name + ' 响应超过预期大小');
+        output.set(bytes, offset);
+        item.received = offset + bytes.byteLength;
+        pendingParts.push(bytes);
+        pendingBytes += bytes.byteLength;
+        await persist();
+      }
+      await persist();
+      if (item.received !== total) {
+        throw new Error(item.name + ' 大小不匹配：期望 ' + total + ' 字节，实际收到 ' + item.received + ' 字节');
+      }
+      item.state = 'verifying';
+      emit('verifying', item);
+      return output;
     } catch (error) {
       if (externalAborted) throw abortedError();
-      if (error && error.name === 'AbortError') throw rangeUnsupported('range request was aborted');
+      if (timedOut) throw new Error(item.name + ' 下载超时或卡住');
       throw error;
     } finally {
+      clearInterval(timer);
       if (external) external.removeEventListener('abort', onExternalAbort);
     }
   }
@@ -749,6 +673,8 @@ export function createAssetManager(options = {}) {
     } else {
       memoryBlobs.set(item.name, new Blob([bytes], { type: item.type }));
     }
+    const parts = await openParts(item);
+    await clearParts(parts);
     item.state = 'cached';
     item.received = bytes.byteLength;
     item.speed = 0;
@@ -768,18 +694,9 @@ export function createAssetManager(options = {}) {
     item.source = sourceLabel(item.url);
     emit('start', item);
 
-    let bytes;
-    try {
-      bytes = await downloadRanged(item, item.url);
-    } catch (error) {
-      if (error && error.name === 'AbortError') throw error;
-      item.received = 0;
-      item.speed = 0;
-      item.sampleAt = 0;
-      item.sampleBytes = 0;
-      emit('retry', item);
-      bytes = await downloadStream(item, item.url);
-    }
+    const bytes = item.expectedSize && item.sha256
+      ? await downloadResumable(item, item.url)
+      : await downloadStream(item, item.url);
     await verifyAndStore(item, bytes);
   }
 
@@ -800,6 +717,12 @@ export function createAssetManager(options = {}) {
     await loadManifest();
     await setupCache();
     await refreshCachedState();
+    for (const item of state.items.values()) {
+      if (item.state !== 'cached') {
+        item.received = await resumeOffset(item);
+        if (item.received > 0) item.state = 'idle';
+      }
+    }
     state.initialized = true;
     emit('init', null);
     return snapshot();
@@ -896,6 +819,15 @@ export function createAssetManager(options = {}) {
         await cacheStorage.delete(state.cacheName);
       } catch (error) {
         // 忽略
+      }
+    }
+    if (cacheStorage && typeof cacheStorage.delete === 'function') {
+      for (const item of state.items.values()) {
+        try {
+          await cacheStorage.delete(partCacheName(item));
+        } catch (error) {
+          // 忽略
+        }
       }
     }
     for (const item of state.items.values()) {
