@@ -12,13 +12,15 @@ import (
 
 // Master configures registration with the relay master.
 type Master struct {
-	Enabled       bool   `json:"enabled"`
-	Domain        string `json:"domain"`
-	Scheme        string `json:"scheme"`
-	AdvertiseURL  string `json:"advertiseUrl"`
-	IntervalMs    int64  `json:"intervalMs"`
-	TimeoutMs     int64  `json:"timeoutMs"`
-	SkipWhenToken bool   `json:"skipWhenToken"`
+	Enabled       bool     `json:"enabled"`
+	Domain        string   `json:"domain"`
+	Scheme        string   `json:"scheme"`
+	AdvertiseURL  string   `json:"advertiseUrl"`
+	SignalURL     string   `json:"signalUrl,omitempty"`
+	Transports    []string `json:"transports,omitempty"`
+	IntervalMs    int64    `json:"intervalMs"`
+	TimeoutMs     int64    `json:"timeoutMs"`
+	SkipWhenToken bool     `json:"skipWhenToken"`
 }
 
 func defaultMaster() Master {
@@ -27,6 +29,8 @@ func defaultMaster() Master {
 		Domain:        "master.landmine.top",
 		Scheme:        "https",
 		AdvertiseURL:  "",
+		SignalURL:     "",
+		Transports:    nil,
 		IntervalMs:    30000,
 		TimeoutMs:     5000,
 		SkipWhenToken: true,
@@ -162,6 +166,28 @@ func validateMaster(cfg *Config) error {
 	if cfg.Master.AdvertiseURL != "" {
 		if _, err := AdvertiseRelayURL(cfg); err != nil {
 			return err
+		}
+	}
+	if cfg.Master.SignalURL != "" {
+		parsed, err := url.Parse(cfg.Master.SignalURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return errors.New("master.signalUrl must be an http:// or https:// URL")
+		}
+	}
+	if len(cfg.Master.Transports) > 0 {
+		seen := make(map[string]bool)
+		for _, raw := range cfg.Master.Transports {
+			value := strings.ToLower(strings.TrimSpace(raw))
+			if value != "websocket" && value != "webrtc" {
+				return fmt.Errorf("master.transports contains unsupported transport %q", raw)
+			}
+			if seen[value] {
+				return fmt.Errorf("master.transports contains duplicate transport %q", value)
+			}
+			seen[value] = true
+		}
+		if seen["webrtc"] && !cfg.RTC.Enabled {
+			return errors.New("master.transports includes webrtc but rtc.enabled is false")
 		}
 	}
 	return nil

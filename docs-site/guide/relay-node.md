@@ -87,7 +87,9 @@ RELAY_MASTER_ADVERTISE_URL='wss://play.example.com' \
 | `RTC_PUBLIC_IP` | NAT/1:1 映射后的公网 IP |
 | `RTC_ICE_SERVERS` | 可选 STUN/TURN URL 列表 |
 | `RELAY_MASTER_DOMAIN` | master 地址，默认 `https://master.landmine.top` |
-| `RELAY_MASTER_ADVERTISE_URL` | 向 master 注册的公网 relay URL |
+| `RELAY_MASTER_ADVERTISE_URL` | WebSocket 注册地址 / WebRTC 信令推导 base |
+| `RELAY_MASTER_SIGNAL_URL` | 显式 WebRTC 信令 URL（WebRTC-only 时有用） |
+| `RELAY_MASTER_TRANSPORTS` | `websocket,webrtc`（RTC 开启时）或 `webrtc` |
 | `RELAY_MASTER_INTERVAL_MS` | 注册/心跳间隔，默认 `30000` |
 
 ## WebRTC 与固定端口
@@ -118,13 +120,20 @@ RTC_UDP_PORT=443
 https://master.landmine.top/v1/register
 ```
 
-master 会在首次注册时主动访问：
+注册使用 transports 数组。master 会逐项验证：
 
-```text
-<relay公网URL>/ws
+- `websocket`：访问 `<relay公网URL>/ws` 做 RFC6455 握手；
+- `webrtc`：建立真实 WebRTC DataChannel，验证信令和 ICE。
+
+至少一项成功才进入 `/v1/serverlist`。只注册 WebRTC：
+
+```bash
+RELAY_MASTER_TRANSPORTS=webrtc \
+RELAY_MASTER_SIGNAL_URL=https://relay.example.com/rtc/offer \
+./relay
 ```
 
-握手成功后节点才进入 `/v1/serverlist`。之后每 15 分钟复检，失败节点移除。
+之后每 15 分钟逐项复检；某项失败只移除该项，全部失败才移除节点。
 
 如果 relay 设置了 `RELAY_TOKENS`，按约定它不会注册到公共 master；同时会尝试移除之前注册过的同 URL 节点。
 

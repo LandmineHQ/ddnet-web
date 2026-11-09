@@ -38,15 +38,15 @@ const post = async (path, payload) => {
   return { status: response.status, body: await response.json().catch(() => ({})) };
 };
 
-const bad = await post('/v1/register', { name: 'Dead Relay', url: 'ws://127.0.0.1:8398' });
+const bad = await post('/v1/register', { name: 'Dead Relay', transports: [{ type: 'websocket', url: 'ws://127.0.0.1:8398' }] });
 record("注册时 WS 探测失败被拒绝", bad.status === 502 && bad.body.ok === false, JSON.stringify(bad).slice(0, 160));
 
-const good = await post('/v1/register', { name: 'Master E2E Relay', url: NODE_URL, region: 'TEST', version: '1.0.0' });
+const good = await post('/v1/register', { name: 'Master E2E Relay', region: 'TEST', version: '1.0.0', transports: [{ type: 'websocket', url: NODE_URL }] });
 record("注册时 WS 探测成功并验证", good.status === 200 && good.body.verified === true, JSON.stringify(good).slice(0, 160));
 
 const listResponse = await fetch(MASTER + '/v1/serverlist', { headers: { origin: 'https://play.example.com' } });
 const list = await listResponse.json();
-const listed = Array.isArray(list.servers) && list.servers.some((node) => node.url === NODE_URL);
+const listed = Array.isArray(list.servers) && list.servers.some((node) => Array.isArray(node.transports) && node.transports.some((t) => t.url === NODE_URL));
 record("serverlist 返回已验证节点", listed, "count=" + list.count + " cors=" + (listResponse.headers.get('access-control-allow-origin') || ''));
 
 const browser = await puppeteer.launch({
@@ -75,7 +75,7 @@ record("网页显示 Master 节点标记", /Master 节点/.test(tag), tag.slice(
 await page.screenshot({ path: SHOTS + "/master-discovery.png" }).catch(() => {});
 await browser.close();
 
-await post('/v1/unregister', { url: NODE_URL });
+await post('/v1/unregister', { transports: [{ type: 'websocket', url: NODE_URL }] });
 wsRelay.close();
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

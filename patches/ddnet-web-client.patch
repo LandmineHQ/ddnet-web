@@ -489,10 +489,10 @@ index 3fb1900..c4c9657 100644
  #endif // ENGINE_SHARED_WEBSOCKETS_H
 diff --git a/src/engine/shared/websockets_emscripten.cpp b/src/engine/shared/websockets_emscripten.cpp
 new file mode 100644
-index 0000000..bb7dc71
+index 0000000..0ffb7ce
 --- /dev/null
 +++ b/src/engine/shared/websockets_emscripten.cpp
-@@ -0,0 +1,732 @@
+@@ -0,0 +1,746 @@
 +#include "websockets.h"
 +
 +#if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -567,6 +567,15 @@ index 0000000..bb7dc71
 +
 +	function fallbackToWS(reason) {
 +		if (rec.closed || rec.opened || rec.mode === 'ws') return;
++		if (force === 'webrtc') {
++			// WebRTC-only relays must never silently fall back to a non-existent WS endpoint.
++			rec.closed = true;
++			Module['DDWSTransport'] = 'webrtc';
++			try { if (rec.dc) rec.dc.close(); } catch (e) {}
++			try { if (rec.pc) rec.pc.close(); } catch (e) {}
++			console.warn('[ddws] WebRTC-only transport failed (' + reason + ')');
++			return;
++		}
 +		rec.mode = 'fallback';
 +		Module['DDWSTransport'] = 'fallback';
 +		g.mode.fallback++;
@@ -583,8 +592,13 @@ index 0000000..bb7dc71
 +	var isGameURL = url.indexOf('/udp/') >= 0;
 +	var hasRTC = (typeof globalThis.RTCPeerConnection === 'function');
 +
-+	if (force === 'ws' || !isGameURL || !hasRTC) {
++	if (force === 'ws' || (force !== 'webrtc' && (!isGameURL || !hasRTC))) {
 +		openWS();
++		return idx;
++	}
++	if (force === 'webrtc' && (!isGameURL || !hasRTC)) {
++		rec.closed = true;
++		Module['DDWSTransport'] = 'webrtc';
 +		return idx;
 +	}
 +

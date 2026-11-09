@@ -48,6 +48,8 @@ RELAY_IMAGE_TAG=v0.1.0 docker compose -f compose.yml up -d
 | `MASTER_DOMAIN` | `master.landmine.top` | master 域名 |
 | `RELAY_ORIGINS` | `https://play.example.com` | 允许的浏览器 Origin |
 | `RELAY_TOKENS` | `secret` | 设置后 relay 不注册 master |
+| `RELAY_MASTER_TRANSPORTS` | `websocket,webrtc` | 要注册的 transport；可填 `webrtc` |
+| `RELAY_MASTER_SIGNAL_URL` | `https://.../rtc/offer` | WebRTC 信令地址；WebRTC-only 时使用 |
 | `RTC_PUBLIC_IP` | `203.0.113.10` | NAT 公网 IP |
 | `RTC_ICE_SERVERS` | `stun:stun.example.org:3478` | 可选 STUN/TURN |
 | `RELAY_IMAGE_TAG` | `latest` / `v0.1.0` | GHCR 镜像 tag |

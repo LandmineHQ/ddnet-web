@@ -3,7 +3,7 @@
 > 给后续 AI agent / 开发者：项目做了什么、代码改在哪、怎么构建/运行/验证，以及**必须遵守的约定**。
 > 动手前先读第 3、7、8 节。最近一次大改：后端改为 **Go**、游戏内服务器浏览器可经后端加入、移动端触屏 UI、
 > `Ctrl+反引号键` 快捷键、**WebRTC DataChannel（首选）/ WebSocket（回退）双传输**、全部 docker 走 compose；
-> 新增 **relay master**（WS 探测 + 15 分钟存活检查）、前端相对 `/relay-master`、WebRTC `host/udpPort` 声明、
+> 新增 **relay master**（WSS/WebRTC 逐项探测 + 15 分钟存活检查）、WebRTC transports 数组、
 > **TCP/UDP 同端口**，生产 TLS/WSS/静态站点全部交给 **nginx**（不再使用 Caddy）。
 
 ---
@@ -19,12 +19,13 @@
 |---|---|---|
 | **前端** | `web/` + `ddnet-dev/`（wasm） | 浏览器界面 + wasm 客户端 |
 | **后端节点** | `relay-go/` | **Go** 实现，兼容层：让前端客户端连接任何 UDP 游戏服务器 |
-| **relay master** | `relay-go/cmd/master` | **Go** 节点注册中心：注册、WS 首次验证、15 分钟存活检查；网页从 `/v1/serverlist` 获取节点 |
+| **relay master** | `relay-go/cmd/master` | **Go** 节点注册中心：按 transports 数组验证 WSS/WebRTC、15 分钟存活检查；网页从 `/v1/serverlist` 获取节点 |
 | **游戏服务器** | 不修改 | 原版 DDNet，只支持 UDP（0.6/0.7） |
 
 - 状态：**可用 MVP+**。浏览器内可进服游玩（0.6/0.7 实测）；游戏内服务器浏览器可浏览并加入；
   移动端有触屏 UI；游戏流量默认走 **WebRTC DataChannel**（pion/webrtc），失败自动回退 WebSocket；
-  新增 **relay master** 节点注册中心（WS 首次验证 + 15 分钟存活检查）；全部服务用 docker compose 起停/测试。
+  **relay master** 节点注册中心按 transports 数组逐项验证 WebSocket/WebRTC，至少一项成功才入列表；
+  全部服务用 docker compose 起停/测试。
 - 上游基线：`ddnet/ddnet@a02cf38`。
 - 核心洞察：DDNet 上游已有完整 Emscripten 构建（渲染/音频/存档/HTTP 全通），**唯一缺口是网络**；
   本项目补了 WebSocket 传输，并让游戏内浏览器拿到的 UDP 地址经后端中转。
@@ -37,7 +38,7 @@
 │ websockets_emscripten.cpp  │─────────▶│ SSRF/限流/token   │         └──────────────┘
 └───────────────────────────┘   wss    └──────────────────┘
         │ GET /v1/serverlist                  ▲ POST /v1/register
-        ▼                                      │（master 主动 WS 探测 /ws）
+        ▼                                      │（master 探测 WSS /ws 或 WebRTC）
 ┌──────────────────────────────────────────────────────────────┐
 │ relay-master（master.landmine.top / :8391）：注册 + 15 分钟存活检查 │
 └──────────────────────────────────────────────────────────────┘
@@ -52,7 +53,7 @@
 | `ddnet/` | 上游 DDNet 源码（**基线，不要改**） | 只读 |
 | `ddnet-dev/` | git worktree（分支 `web-client`），**含本项目补丁** | 改这里 |
 | `patches/ddnet-web-client.patch` | 补丁导出（1283 行 / 9 文件），可干净 apply 到上游 | 由 ddnet-dev 生成 |
-| `relay-go/` | **后端节点（Go 1.24 + pion/webrtc，依赖已 vendor）**：WebRTC↔UDP / WS↔UDP、API、鉴权、SSRF、限流、统计；另含 `cmd/master`（relay master）、`internal/master`（注册/WS 探测/健康检查）与 `internal/relaymaster`（relay 侧注册客户端）；`bin/` 为可选的本地预编译产物（不纳入提交） | 后端任务 |
+| `relay-go/` | **后端节点（Go 1.24 + pion/webrtc，依赖已 vendor）**：WebRTC↔UDP / WS↔UDP、API、鉴权、SSRF、限流、统计；另含 `cmd/master`（relay master）、`internal/master`（注册/WSS+WebRTC 探测/健康检查）与 `internal/relaymaster`（relay 侧注册客户端）；`bin/` 为可选的本地预编译产物（不纳入提交） | 后端任务 |
 | `relay/` | 旧 Node 中继（参考实现 + 原测试，保留对照；生产不用） | 只读/对照 |
 | `web/` | 前端站点（原生 ESM 零依赖）+ Node 测试 + 移动端截图工具 | 前端任务 |
 | `docs-site/` | VitePress Wiki：relay/master API、WASM 桥接、compose/二进制部署 | 文档任务 |
@@ -374,25 +375,26 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
 - 新服务 `cmd/master`（镜像 `Dockerfile.master`），默认域名 `master.landmine.top`，开发栈监听
   `0.0.0.0:8391`；生产由 nginx 的 `master.landmine.top` 反代到宿主 `127.0.0.1:8391`。
 - API：
-  - `POST /v1/register`：`{name,url,region,version,players,transports,webrtc}`，`url` 必须是
-    `ws://`/`wss://` base；`webrtc:{enabled,host,signalUrl,udpPort}` 声明媒体主机/IP、信令地址和固定 ICE UDP 端口。
-    **首次注册 master 主动对 `<url>/ws` 做 RFC6455 握手探测**；失败返回 502，不进入列表。
-  - `POST /v1/unregister`：`{url}`，relay 优雅退出时尽力调用。
+  - `POST /v1/register`：`{name,region,version,players,transports}`，`transports` 是数组，
+    每项为 `{type:"websocket",url}` 或 `{type:"webrtc",signalUrl,host,udpPort,origin?}`。
+    master 逐项验证：WS 做 RFC6455 `/ws` 握手，WebRTC 建立真实 DataChannel；至少一项成功才入列表，
+    失败项过滤。
+  - `POST /v1/unregister`：`{transports:[...]}`，relay 优雅退出时尽力调用。
   - `GET /v1/serverlist`：只返回已验证 + healthy 节点；带 CORS（默认 `*`）。
   - `GET /healthz`、`GET /api/stats`。
-- 前端默认请求 **`https://master.landmine.top/v1/serverlist`**；生产也可以改用 nginx 反代 `/relay-master/*`，
+- 前端默认请求 **`https://master.landmine.top/v1/serverlist`**；WebRTC-only 节点用 `signalUrl` 推导连接 base，并加 `?transport=webrtc`；生产也可以改用 nginx 反代 `/relay-master/*`，
   可用 `<meta name="relay-master-base">` / `window.DDWEB_MASTER_BASE` / `?masterBase=` / `?master=` 调整。
-- relay 注册同时声明 `transports`（`websocket`/`webrtc`）与
-  `webrtc:{enabled,host,signalUrl,udpPort}`。`host` 是 WebRTC UDP 入口的域名/IP（优先
-  `RTC_PUBLIC_IP`，否则取广告 URL 主机名）；master 会校验 host，并拒绝
-  `webrtc.enabled=true` 且 `udpPort=0`（禁止按用户分配 UDP 端口）。
+- relay 注册使用 `transports` 数组；每项是 `{type:"websocket",url}` 或
+  `{type:"webrtc",signalUrl,host,udpPort,origin?}`。`host` 是 WebRTC UDP 入口的域名/IP（优先
+  `RTC_PUBLIC_IP`，否则取广告 URL 主机名）；`udpPort` 必须是固定端口。可用
+  `RELAY_MASTER_TRANSPORTS=webrtc` 只注册 WebRTC，`RELAY_MASTER_SIGNAL_URL` 显式指定信令地址。
 - relay 默认 `master.domain=master.landmine.top`、`scheme=https`、`enabled=true`、`skipWhenToken=true`；
   可通过 `RELAY_MASTER_DOMAIN` / `--master-domain`（支持 `http://host:port` 形式）、
   `RELAY_MASTER_ADVERTISE_URL` / `--master-advertise-url` 等修改。
 - TCP(WS) 与 UDP(ICE) 默认同一端口：dev `8390`、生产 `443`；`RTC_UDP_PORT=0` 会被配置层转换为 relay TCP 端口，
   所有 WebRTC peer 共用 `ice.UDPMuxDefault` 的固定 UDP 端口，不会按用户分配。
-- 注册心跳默认 30s；master 对已验证节点的心跳**不重复探测**。master 每 **15 分钟**（`MASTER_PROBE_INTERVAL_MS`）
-  用 WS 检查所有节点，失败即 `Remove` 并从 `/v1/serverlist` 消失。
+- 注册心跳默认 30s；master 对已验证且未变化的 transport 不重复探测。master 每 **15 分钟**
+  （`MASTER_PROBE_INTERVAL_MS`）逐项检查 WSS/WebRTC，某项失败只移除该项；全部失败才移除节点。
 - **设置了 token 的 relay 不注册**（`config.ShouldRegister`）；广告 URL 是 loopback 而 master 是远程域时也跳过，
   避免把 `ws://127.0.0.1` 注册到公网 master。公网部署必须设置 `RELAY_MASTER_ADVERTISE_URL` / `RELAY_PUBLIC_URL`。
 - relay 新增 `/ws` 健康升级端点（只接受升级并立即关闭），供 master 探测；生产 nginx 与 dev-https 已放行 `/ws`。
@@ -430,9 +432,9 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
 3. 前端启动 wasm 的契约：`connect <url>` 永远是一个完整字符串且最后执行。触屏设备前置
    `cl_touch_controls 1`、`cl_back_button 1`；**桌面端前置 `cl_touch_controls 0`、`cl_back_button 0`**
    （显式关闭，避免 IndexedDB 里残留移动端配置导致桌面显示触控控件）。
-4. relay master 契约：relay 默认向 `master.landmine.top` 注册；master 首次用 WS `<url>/ws` 验证，
-   每 15 分钟复检；有 token 的 relay 不注册；公网 relay 必须显式设置广告 ws(s) URL。
-   注册需带 `transports` 和 `webrtc:{enabled,host,signalUrl,udpPort}`；`host`/固定 UDP 端口不可省略。
+4. relay master 契约：relay 默认向 `master.landmine.top` 注册；注册使用 `transports` 数组，
+   master 对 WSS/WebRTC 逐项验证，至少一项成功；每 15 分钟复检；有 token 的 relay 不注册；
+   公网 relay 必须显式设置广告 ws(s) URL。允许 `RELAY_MASTER_TRANSPORTS=webrtc` 的 WebRTC-only 节点。
 5. 游戏内地址改写的契约：`DDWeb_SetDefaultRelay(base, query)`，`base` 不带尾斜杠、可含路径；
    `query` 是已 URL 编码的查询串（如 `token=abc`，不带 `?`）；C++ 负责拼 `/udp/<host>:<port>` 并在 0.7 时追加
    `protocol=7`（已有 query 时用 `&`）。
@@ -475,7 +477,7 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
     relay-go/internal/relay/server.go                       # HTTP API + WS upgrade + /rtc/offer
     relay-go/internal/relay/session.go                      # WS↔UDP 会话
     relay-go/internal/rtc/manager.go                        # pion/webrtc：echo + DataChannel↔UDP 游戏传输
-    relay-go/internal/master/                               # registry + /v1 API + WS 探测 + 15 分钟健康检查
+    relay-go/internal/master/                               # registry + /v1 API + WSS/WebRTC 探测 + 15 分钟健康检查
     relay-go/internal/relaymaster/                          # relay 侧 master 注册/心跳客户端
     relay-go/cmd/master/main.go relay-go/Dockerfile.master  # relay master 服务
     relay-go/internal/config/master.go                      # master 地址/注册配置 + ShouldRegister

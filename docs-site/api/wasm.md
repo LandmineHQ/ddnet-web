@@ -90,6 +90,7 @@ wss://relay.example.com/udp/host:port?protocol=7
 - 浏览器先尝试 RTCPeerConnection + DataChannel
 - 约 6 秒未建立或信令失败则回退 WebSocket
 - `?transport=ws` 强制 WebSocket
+- `?transport=webrtc` 用于 WebRTC-only relay：失败也不会回退 WebSocket
 
 ## 资源与缓存
 

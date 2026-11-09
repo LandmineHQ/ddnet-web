@@ -10,46 +10,76 @@ https://master.landmine.top
 
 ## POST /v1/register
 
-relay 注册并声明自己的传输能力：
+注册体的 `transports` 是**数组**，每项声明一种连接方式和自己的参数：
 
 ```json
 {
   "name": "DDNet Relay",
-  "url": "wss://play.example.com",
   "region": "EU",
   "version": "1.0.0",
   "players": 0,
-  "transports": ["websocket", "webrtc"],
-  "webrtc": {
-    "enabled": true,
-    "host": "play.example.com",
-    "signalUrl": "https://play.example.com/rtc/offer",
-    "udpPort": 443
-  }
+  "transports": [
+    {
+      "type": "websocket",
+      "url": "wss://play.example.com"
+    },
+    {
+      "type": "webrtc",
+      "signalUrl": "https://play.example.com/rtc/offer",
+      "host": "play.example.com",
+      "udpPort": 443,
+      "origin": "https://play.example.com"
+    }
+  ]
 }
 ```
 
-字段：
+### transport 字段
 
-| 字段 | 必填 | 说明 |
+| 字段 | 适用 | 说明 |
 | --- | --- | --- |
-| `url` | 是 | relay 的 `ws://` / `wss://` base |
-| `name` | 建议 | 展示名称 |
-| `region` | 否 | 地区标记 |
-| `version` | 否 | relay 版本 |
-| `players` | 否 | 当前玩家数，默认 0 |
-| `transports` | 建议 | `websocket` / `webrtc` |
-| `webrtc.enabled` | 否 | 是否启用 WebRTC |
-| `webrtc.host` | WebRTC 启用时必填 | UDP 入口域名/IP |
-| `webrtc.signalUrl` | WebRTC 启用时必填 | HTTP(S) `/rtc/offer` 地址 |
-| `webrtc.udpPort` | WebRTC 启用时必填 | 固定共享 ICE UDP 端口，不能为 0 |
+| `type` | 全部 | `websocket` 或 `webrtc` |
+| `url` | `websocket` | relay 的 `ws://` / `wss://` base |
+| `signalUrl` | `webrtc` | `/rtc/offer` 信令地址，`http(s)://` |
+| `host` | `webrtc` | 浏览器 ICE 使用的域名/IP |
+| `udpPort` | `webrtc` | 固定共享 ICE UDP 端口，不能为 0 |
+| `origin` | `webrtc` | 可选；master 探测时发送的 Origin |
 
-成功响应：
+至少一项；可以只注册 `webrtc`，也可以只注册 `websocket`，或两者都注册。
+
+> 这是 break change：旧的顶层 `url`、`transports: ["websocket","webrtc"]` 和 `webrtc:{...}` 不再接受。
+
+## 验证规则
+
+master 对数组中的每一项独立探测：
+
+### WebSocket
+
+```text
+<url>/ws
+```
+
+执行 RFC 6455 握手；失败则该项不进入列表。
+
+### WebRTC
+
+master 使用 pion 创建真实 DataChannel，向 `signalUrl` POST offer，设置 answer，等待 DataChannel/peer 连接成功。失败则该项不进入列表。
+
+- 至少一项成功：节点进入 `/v1/serverlist`
+- 部分成功：只返回成功的 transport
+- 全部失败：HTTP `502`，节点不注册
+
+之后每 30 秒心跳；已验证且未变化的 transport 不重复探测。每 15 分钟逐项复检，某项失败只移除该项，全部失败移除节点。
+
+成功响应示例：
 
 ```json
 {
   "ok": true,
-  "url": "wss://play.example.com",
+  "key": "websocket:wss://play.example.com",
+  "transports": [
+    { "type": "websocket", "url": "wss://play.example.com" }
+  ],
   "verified": true,
   "probed": true,
   "probeMs": 12,
@@ -59,32 +89,23 @@ relay 注册并声明自己的传输能力：
 }
 ```
 
-### 首次注册验证
-
-master 会主动连接：
-
-```text
-<relay.url>/ws
-```
-
-使用 RFC 6455 握手：
-
-- 成功：节点进入列表
-- 失败：返回 `502`，节点不注册
-
-之后 relay 每 30 秒心跳；已验证节点心跳不会重复探测。master 每 15 分钟复检所有节点，失败即移除。
-
 ## POST /v1/unregister
 
+使用与注册相同的 transports 数组定位节点：
+
 ```json
-{ "url": "wss://play.example.com" }
+{
+  "transports": [
+    { "type": "websocket", "url": "wss://play.example.com" }
+  ]
+}
 ```
 
-relay 退出时会尽力调用；也可以手动清理节点。
+relay 退出时会尽力调用。
 
 ## GET /v1/serverlist
 
-只返回已验证且 healthy 的节点：
+只返回至少有一项已验证且 healthy 的节点；`transports` 只包含验证成功的项：
 
 ```json
 {
@@ -93,22 +114,23 @@ relay 退出时会尽力调用；也可以手动清理节点。
   "servers": [
     {
       "name": "DDNet Relay",
-      "url": "wss://play.example.com",
       "region": "EU",
       "version": "1.0.0",
-      "players": 0,
-      "transports": ["websocket", "webrtc"],
-      "webrtc": {
-        "enabled": true,
-        "host": "play.example.com",
-        "signalUrl": "https://play.example.com/rtc/offer",
-        "udpPort": 443
-      },
+      "transports": [
+        {
+          "type": "webrtc",
+          "signalUrl": "https://play.example.com/rtc/offer",
+          "host": "play.example.com",
+          "udpPort": 443
+        }
+      ],
       "healthy": true
     }
   ]
 }
 ```
+
+WebRTC-only 节点没有顶层 `url`；前端会根据 `signalUrl` 推导连接 base。
 
 默认 CORS 为 `*`，可用 `MASTER_CORS_ORIGINS` 限制。
 
@@ -128,7 +150,7 @@ relay 退出时会尽力调用；也可以手动清理节点。
 | --- | --- | --- |
 | `MASTER_HOST` / `MASTER_PORT` | `0.0.0.0` / `8391` | HTTP 监听 |
 | `MASTER_PROBE_INTERVAL_MS` | `900000` | 存活检查间隔（15 分钟） |
-| `MASTER_PROBE_TIMEOUT_MS` | `5000` | 单节点 WS 探测超时 |
+| `MASTER_PROBE_TIMEOUT_MS` | `5000` | 单项 transport 探测超时 |
 | `MASTER_REGISTER_PER_MINUTE` | `30` | 单 IP 注册频率限制 |
 | `MASTER_MAX_NODES` | `1000` | 最大节点数 |
 | `MASTER_CORS_ORIGINS` | `*` | `/v1/serverlist` CORS |

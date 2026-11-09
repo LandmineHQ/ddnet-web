@@ -10,7 +10,7 @@
 [![nginx](https://img.shields.io/badge/nginx-TLS%20%2F%20WSS-009639.svg?style=flat-square&logo=nginx&logoColor=white)](https://nginx.org/)
 [![Tests](https://img.shields.io/badge/tests-79%20Go%20%7C%2082%20Node%20%7C%2089%20E2E-2ea44f.svg?style=flat-square)](#-development--verification)
 
-*仓库名：`ddnet-web`。在浏览器里玩 DDNet 0.6/0.7；游戏流量优先走 WebRTC DataChannel，失败自动回退 WebSocket；relay master 负责节点注册、首次 WS 验证和 15 分钟存活检查。*
+*仓库名：`ddnet-web`。在浏览器里玩 DDNet 0.6/0.7；游戏流量优先走 WebRTC DataChannel，失败自动回退 WebSocket；relay master 负责节点注册、WSS/WebRTC 逐项验证和 15 分钟存活检查。*
 
 **文档：** [快速开始](docs/QUICKSTART.md) · [Wiki](docs-site/index.md) · [架构与约定](AGENTS.md) · [生产 nginx](deploy/README.md) · [前端说明](web/README.md) · [Go relay](relay-go/README.md)
 
@@ -28,7 +28,7 @@
 
 - **WebRTC DataChannel（首选）**：UDP 语义的 `ordered:false, maxRetransmits:0`，适合游戏数据报；
 - **WebSocket（回退）**：1 个二进制帧 = 1 个 UDP 数据报，兼容现有中继与严格网络环境；
-- **relay master**：中继节点向中心注册，master 主动 WS 验证并通过 `/v1/serverlist` 下发健康节点；
+- **relay master**：中继节点以 transports 数组向中心注册，master 逐项验证 WS/WebRTC 并通过 `/v1/serverlist` 下发成功项；
 - **生产入口**：Go 中继只讲明文 HTTP/WS，TLS/WSS/静态站点全部交给 nginx。
 
 浏览器只连接自建中继，不直接访问游戏服务器；中继再把 UDP 数据报发给任意 DDNet 0.6/0.7 服务器。服务端零修改。
@@ -52,8 +52,8 @@
 - **WebRTC DataChannel**：浏览器与中继之间直接建立 UDP/DTLS 数据通道，中继通过 `POST /rtc/offer` 完成非 trickle 信令。
 - **WebSocket 回退**：`ws[s]://relay/udp/<host>:<port>[?token=...&protocol=7]`，每帧对应一个 UDP 数据报。
 - **固定共享 UDP 端口**：所有 WebRTC peer 共用同一 `ice.UDPMuxDefault`，不会按用户分配 UDP 端口；TCP(WS) 与 UDP(ICE) 默认同号（开发 `8390`，生产 `443`）。
-- **relay master**：`/v1/register` 首次注册时主动对 `<relay>/ws` 做 RFC6455 握手验证，失败返回 502；之后每 15 分钟复检，失败节点立即从列表移除。
-- **WebRTC 元数据声明**：注册报文包含 `transports` 和 `webrtc:{enabled,host,signalUrl,udpPort}`，master 会校验 host 与固定端口。
+- **relay master**：`/v1/register` 按 `transports` 数组逐项验证：WebSocket 做 RFC6455 `/ws` 握手，WebRTC 建立真实 DataChannel；至少一项成功才入列表，失败项不对外暴露。
+- **混合传输**：relay 可只注册 WebSocket、只注册 WebRTC，或两者都注册；每 15 分钟分别复检，某项失败只移除该项。
 - **token relay 不注册**：配置了 `RELAY_TOKENS` 的 relay 自动跳过 master 注册，避免私有节点泄露到公共列表。
 
 ### 前端与运维
@@ -76,7 +76,7 @@
 | 桌面 | Pointer Lock、ESC 菜单光标、Tab 计分板、IME、剪贴板 |
 | 移动端 | 触屏控件、触屏引导、全屏按钮（Android/平板浏览器） |
 | 中继节点 | Go 1.24，单二进制/容器；WebRTC + WS + UDP |
-| relay master | Go 1.24；HTTP API + 主动 WS 探测 + 15 分钟健康检查 |
+| relay master | Go 1.24；HTTP API + WSS/WebRTC 逐项探测 + 15 分钟健康检查 |
 | 生产入口 | nginx（TLS/WSS/静态站点/反代）；relay 只讲 HTTP/WS |
 | 构建 | Emscripten 4.0.22 + Rust 1.89 + Docker wasm builder |
 | 测试 | Go 79 项、前端 Node 82 项、Chromium E2E 89 项 |
@@ -240,21 +240,34 @@ wss://play.example.com/udp/<host>:<port>?token=<t>&protocol=7
 ```json
 {
   "name": "DDNet Relay",
-  "url": "wss://play.example.com",
   "region": "EU",
   "version": "1.0.0",
   "players": 0,
-  "transports": ["websocket", "webrtc"],
-  "webrtc": {
-    "enabled": true,
-    "host": "play.example.com",
-    "signalUrl": "https://play.example.com/rtc/offer",
-    "udpPort": 443
-  }
+  "transports": [
+    { "type": "websocket", "url": "wss://play.example.com" },
+    {
+      "type": "webrtc",
+      "signalUrl": "https://play.example.com/rtc/offer",
+      "host": "play.example.com",
+      "udpPort": 443,
+      "origin": "https://play.example.com"
+    }
+  ]
 }
 ```
 
-master 首次注册会主动请求 `<url>/ws` 验证；`webrtc.host` 是 UDP 入口的域名/IP，`udpPort` 是固定共享端口。
+`transports` 至少一项：
+
+- `websocket`：master 验证 `<url>/ws` RFC6455 握手。
+- `webrtc`：master 建立真实 DataChannel 验证信令和 ICE；`host` 是 UDP 入口，`udpPort` 是固定共享端口。
+- 只注册 WebRTC 时不传 `websocket` 项，`url` 不再是顶层必填字段。
+- 两项目都注册时，成功项进入 `/v1/serverlist`；失败项自动过滤。
+
+注销使用同样的 `transports` 数组：
+
+```json
+{ "transports": [{ "type": "websocket", "url": "wss://play.example.com" }] }
+```
 
 ---
 
@@ -281,7 +294,7 @@ flowchart LR
 
 - **浏览器**只接触 nginx；WebRTC 媒体/数据通道直接到 relay UDP。
 - **relay** 负责 WS ↔ UDP、WebRTC ↔ UDP、鉴权/SSRF/限流/统计。
-- **master** 负责注册、首次 WS 验证、15 分钟健康检查和节点列表。
+- **master** 负责注册、WebSocket/WebRTC 逐项验证、15 分钟健康检查和节点列表。
 - **游戏服务器**保持原版 DDNet，无任何修改。
 
 ---
@@ -302,7 +315,9 @@ flowchart LR
 | `RTC_PUBLIC_IP` | 空 | NAT 后通告的公网 IP |
 | `RTC_ICE_SERVERS` | 空 | STUN/TURN URL 列表 |
 | `RELAY_MASTER_DOMAIN` | `https://master.landmine.top` | master 地址 |
-| `RELAY_MASTER_ADVERTISE_URL` | `wss://$RELAY_DOMAIN`（生产 compose） | 注册到 master 的公网 relay URL |
+| `RELAY_MASTER_ADVERTISE_URL` | `wss://$RELAY_DOMAIN`（生产 compose） | WebSocket 注册地址 / WebRTC 信令推导 base |
+| `RELAY_MASTER_SIGNAL_URL` | 空 | 显式 WebRTC 信令 URL，适合 WebRTC-only |
+| `RELAY_MASTER_TRANSPORTS` | RTC 开启时 `websocket,webrtc` | 注册哪些 transport；可填 `webrtc` |
 | `RELAY_MASTER_INTERVAL_MS` | `30000` | 注册/心跳间隔 |
 
 ### Relay Master
@@ -311,7 +326,7 @@ flowchart LR
 |---|---|---|
 | `MASTER_HOST` / `MASTER_PORT` | `0.0.0.0` / `8391` | master HTTP 监听 |
 | `MASTER_PROBE_INTERVAL_MS` | `900000` | 存活检查间隔（15 分钟） |
-| `MASTER_PROBE_TIMEOUT_MS` | `5000` | 单节点 WS 探测超时 |
+| `MASTER_PROBE_TIMEOUT_MS` | `5000` | 单节点单项 transport 探测超时 |
 | `MASTER_REGISTER_PER_MINUTE` | `30` | 单 IP 注册频率限制 |
 | `MASTER_MAX_NODES` | `1000` | 最大注册节点数 |
 | `MASTER_CORS_ORIGINS` | `*` | `/v1/serverlist` CORS |
@@ -345,8 +360,8 @@ flowchart LR
 
 | Method | Path | 说明 |
 |---|---|---|
-| `POST` | `/v1/register` | relay 注册；首次注册主动 WS 验证 |
-| `POST` | `/v1/unregister` | 移除节点（relay 退出时尽力调用） |
+| `POST` | `/v1/register` | relay 注册；按 transports 逐项验证 WSS/WebRTC |
+| `POST` | `/v1/unregister` | 按 transports 数组成员移除节点 |
 | `GET` | `/v1/serverlist` | 已验证且 healthy 的节点列表，CORS 默认 `*` |
 | `GET` | `/healthz` | master 健康检查 |
 | `GET` | `/api/stats` | 节点数、探测配置 |
@@ -359,8 +374,8 @@ flowchart LR
 - **relay 鉴权**：`RELAY_TOKENS` + `RELAY_ORIGINS`；生产默认 `RELAY_ALLOW_NO_ORIGIN=false`。
 - **SSRF 防护**：默认禁止私网/回环目标；通过 `ALLOW_PRIVATE` / `RELAY_ALLOWLIST` 显式放行。
 - **限流**：每 IP 连接数、总连接数、帧大小、包/字节速率、RTC offer 限流。
-- **master 验证**：首次注册 WS 握手验证 + 15 分钟复检；不健康的 relay 自动移除。
-- **固定 UDP 入口**：所有 WebRTC peer 共用 `ice.UDPMuxDefault` 的同一 UDP 端口；master 拒绝 `webrtc.enabled=true && udpPort=0`。
+- **master 验证**：注册时逐项验证 WSS 握手 / WebRTC DataChannel，15 分钟复检；失败项过滤，全部失败才移除。
+- **固定 UDP 入口**：所有 WebRTC peer 共用 `ice.UDPMuxDefault` 的同一 UDP 端口；master 的 webrtc transport 拒绝 `udpPort=0`。
 - **token relay 不注册**：避免私有 relay 出现在公共 master 列表。
 - **自签证书**：只建议内网测试；浏览器仍会校验证书，跨域名/端口需要单独信任，正式环境使用 nginx + 公网证书。
 - **master 注册表是内存态**：master 重启后依赖 relay 30 秒心跳重新注册；公开注册只有 IP 限流 + 节点数上限。

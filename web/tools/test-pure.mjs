@@ -196,6 +196,9 @@ await test('buildUdpWsUrl：protocol / token 查询参数', () => {
 
   const legacy = buildUdpWsUrl({ relayBase: 'ws://127.0.0.1:8390', host: '127.0.0.1', port: 8313, protocol: 6, token: 'tk' });
   assert.equal(legacy.url, 'ws://127.0.0.1:8390/udp/127.0.0.1:8313?token=tk');
+
+  const webrtcOnly = buildUdpWsUrl({ relayBase: 'wss://relay.example.com', host: '1.2.3.4', port: 8303, transport: 'webrtc' });
+  assert.equal(webrtcOnly.url, 'wss://relay.example.com/udp/1.2.3.4:8303?transport=webrtc');
 });
 
 await test('启动契约：Module.arguments = [\'connect <url>\']', () => {
@@ -583,6 +586,9 @@ await test('buildConnectTarget 组装 0.6/0.7 连接地址', () => {
   assert.deepEqual(six.args, ['connect ws://127.0.0.1:8390/udp/127.0.0.1:8313?token=tk']);
   const seven = buildConnectTarget(relay, target, { protocol: 7 });
   assert.equal(seven.url, 'ws://127.0.0.1:8390/udp/127.0.0.1:8313?protocol=7&token=tk');
+  const rtc = buildConnectTarget({ url: 'wss://rtc.example.com', webrtcOnly: true }, target);
+  assert.equal(rtc.ok, true);
+  assert.equal(rtc.url, 'wss://rtc.example.com/udp/127.0.0.1:8313?transport=webrtc');
   assert.equal(buildConnectTarget(null, target).ok, false);
   const long = buildConnectTarget({ url: 'ws://127.0.0.1:8390', token: 'x'.repeat(MAX_CONNECT_URL_LENGTH) }, target);
   assert.equal(long.ok, false);
@@ -1120,6 +1126,31 @@ await test('relay master：默认域名与 URL 规范化', () => {
   assert.equal(normalizeMasterUrl('/custom-master'), '/custom-master/v1/serverlist');
   assert.equal(normalizeMasterUrl('http://127.0.0.1:8391'), 'http://127.0.0.1:8391/v1/serverlist');
   assert.equal(normalizeMasterUrl('https://master.example.com/v1/serverlist'), 'https://master.example.com/v1/serverlist');
+});
+
+
+await test('sanitizeRelay：WebRTC-only transports', () => {
+  const result = sanitizeRelay({
+    name: 'RTC only',
+    transports: [{ type: 'webrtc', signalUrl: 'https://rtc.example.com/rtc/offer', host: 'rtc.example.com', udpPort: 443 }],
+    source: 'master',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.relay.url, 'wss://rtc.example.com');
+  assert.equal(result.relay.webrtcOnly, true);
+  assert.equal(result.relay.transports.length, 1);
+});
+await test('relay master：WebRTC-only 节点无 url', async () => {
+  const result = await loadMasterRelays(async () => new Response(JSON.stringify({
+    servers: [{
+      name: 'RTC only',
+      transports: [{ type: 'webrtc', signalUrl: 'https://rtc.example.com/rtc/offer', host: 'rtc.example.com', udpPort: 443 }],
+    }],
+  }), { status: 200 }), 'https://master.example.com/v1/serverlist');
+  assert.equal(result.ok, true);
+  assert.equal(result.relays.length, 1);
+  assert.equal(result.relays[0].url, 'wss://rtc.example.com');
+  assert.equal(result.relays[0].webrtcOnly, true);
 });
 
 await test('relay master：解析节点列表并过滤非法条目', async () => {

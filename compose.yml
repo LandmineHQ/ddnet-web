@@ -72,6 +72,8 @@ services:
       # relay master：默认 master.landmine.top；公网 relay 的广告地址必须显式设置
       RELAY_MASTER_DOMAIN: ${RELAY_MASTER_DOMAIN:-https://${MASTER_DOMAIN:-master.landmine.top}}
       RELAY_MASTER_ADVERTISE_URL: ${RELAY_PUBLIC_URL:-wss://${RELAY_DOMAIN:-localhost}}
+      RELAY_MASTER_SIGNAL_URL: ${RELAY_MASTER_SIGNAL_URL:-}
+      RELAY_MASTER_TRANSPORTS: ${RELAY_MASTER_TRANSPORTS:-}
       RELAY_MASTER_INTERVAL_MS: ${RELAY_MASTER_INTERVAL_MS:-30000}
       RELAY_MASTER_TIMEOUT_MS: ${RELAY_MASTER_TIMEOUT_MS:-5000}
     volumes:

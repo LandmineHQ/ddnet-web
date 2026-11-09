@@ -49,8 +49,8 @@ MASTER_TRUST_PROXY, MASTER_MAX_NODES, MASTER_REGISTER_PER_MINUTE,
 MASTER_LOG_LEVEL
 
 Endpoints:
-  POST /v1/register     relay registration; master probes <url>/ws before accepting
-  POST /v1/unregister   remove a relay {url}
+  POST /v1/register     relay registration; master validates each transports[] entry
+  POST /v1/unregister   remove a relay {transports:[...]}
   GET  /v1/serverlist   verified, healthy relay nodes
   GET  /healthz         health check
   GET  /api/stats       registry counters

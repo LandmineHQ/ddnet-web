@@ -2,13 +2,16 @@ package master
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +21,8 @@ import (
 	"time"
 
 	"ddnet-relay-go/internal/logx"
+
+	"github.com/pion/webrtc/v4"
 )
 
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -127,8 +132,103 @@ func headerContains(header http.Header, name, token string) bool {
 	return false
 }
 
-// CheckAll probes every registered node and removes those that do not accept a
-// WebSocket connection. It returns the number of checked and removed nodes.
+// ProbeWebRTC creates a real data channel against the relay's /rtc/offer
+// endpoint and waits until the peer connection/data channel is open.
+func ProbeWebRTC(ctx context.Context, transport Transport, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if transport.SignalURL == "" {
+		return errors.New("webrtc.signalUrl is required")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		return fmt.Errorf("create peer connection: %w", err)
+	}
+	defer pc.Close()
+	dc, err := pc.CreateDataChannel("master-probe", nil)
+	if err != nil {
+		return fmt.Errorf("create data channel: %w", err)
+	}
+	opened := make(chan struct{})
+	var openOnce sync.Once
+	dc.OnOpen(func() { openOnce.Do(func() { close(opened) }) })
+	connected := make(chan struct{})
+	var connOnce sync.Once
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateConnected {
+			connOnce.Do(func() { close(connected) })
+		}
+	})
+
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		return fmt.Errorf("create offer: %w", err)
+	}
+	gather := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(offer); err != nil {
+		return fmt.Errorf("set local description: %w", err)
+	}
+	select {
+	case <-gather:
+	case <-probeCtx.Done():
+		return fmt.Errorf("ice gathering: %w", probeCtx.Err())
+	}
+	local := pc.LocalDescription()
+	if local == nil {
+		return errors.New("no local SDP")
+	}
+	body, _ := json.Marshal(map[string]string{"type": "offer", "sdp": local.SDP})
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodPost, transport.SignalURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", "ddnet-relay-master/1.0")
+	if transport.Origin != "" {
+		request.Header.Set("Origin", transport.Origin)
+	}
+	client := &http.Client{Timeout: timeout}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("signaling request: %w", err)
+	}
+	defer response.Body.Close()
+	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 256*1024))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("signaling returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var answer struct {
+		Type string `json:"type"`
+		SDP  string `json:"sdp"`
+	}
+	if err := json.Unmarshal(responseBody, &answer); err != nil {
+		return fmt.Errorf("decode answer: %w", err)
+	}
+	if answer.SDP == "" {
+		return errors.New("signaling answer has no SDP")
+	}
+	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer.SDP}); err != nil {
+		return fmt.Errorf("set remote description: %w", err)
+	}
+	select {
+	case <-opened:
+		return nil
+	case <-connected:
+		// A connected peer is enough; the relay may not expose the same
+		// datachannel callback ordering.
+		return nil
+	case <-probeCtx.Done():
+		return fmt.Errorf("wait for data channel: %w", probeCtx.Err())
+	}
+}
+
+// CheckAll probes every verified transport of every registered node. Failed
+// transports are removed; nodes with no remaining transport are removed.
+// It returns the number of checked and removed nodes.
 func CheckAll(ctx context.Context, registry *Registry, timeout time.Duration, concurrency int, logger *logx.Logger) (int, int) {
 	if concurrency <= 0 {
 		concurrency = 8
@@ -152,20 +252,40 @@ func CheckAll(ctx context.Context, registry *Registry, timeout time.Duration, co
 			case <-ctx.Done():
 				return
 			}
-			if err := ProbeWebSocket(ctx, node.URL, timeout); err != nil {
-				registry.Remove(node.URL)
+			key, err := NodeKey(node.Transports)
+			if err != nil {
+				registry.Remove(key)
 				removed.Add(1)
-				checked.Add(1)
-				if logger != nil {
-					logger.Warn("master_probe_failed",
-						logx.F("node", node.URL),
-						logx.F("error", err.Error()),
-					)
-				}
 				return
 			}
-			registry.MarkChecked(node.URL, time.Now().UTC(), true)
+			for _, transport := range registry.VerifiedTransports(key) {
+				var probeErr error
+				switch transport.Type {
+				case "websocket":
+					probeErr = ProbeWebSocket(ctx, transport.URL, timeout)
+				case "webrtc":
+					probeErr = ProbeWebRTC(ctx, transport, timeout)
+				default:
+					probeErr = fmt.Errorf("unsupported transport %q", transport.Type)
+				}
+				if probeErr != nil {
+					registry.MarkTransportFailed(key, transport)
+					if logger != nil {
+						logger.Warn("master_probe_failed",
+							logx.F("node", key),
+							logx.F("transport", transport.Type),
+							logx.F("error", probeErr.Error()),
+						)
+					}
+				}
+			}
 			checked.Add(1)
+			healthy := registry.HasVerified(key)
+			registry.MarkChecked(key, time.Now().UTC(), healthy)
+			if !healthy {
+				registry.Remove(key)
+				removed.Add(1)
+			}
 		}()
 	}
 	wait.Wait()

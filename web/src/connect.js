@@ -84,6 +84,7 @@ export function buildConnectTarget(relay, target, options = {}) {
     port: target.port,
     token: relay.token,
     protocol: options.protocol || relay.protocol,
+    transport: relay.webrtcOnly ? 'webrtc' : '',
   });
   if (!built.ok) return built;
   if (built.url.length > MAX_CONNECT_URL_LENGTH) {

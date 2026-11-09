@@ -45,17 +45,21 @@ func TestRegisterOnce(t *testing.T) {
 	if interval != time.Minute {
 		t.Fatalf("interval = %v, want 1m", interval)
 	}
-	if received["url"] != "wss://relay.example.com" || received["name"] != "Test Relay" || received["region"] != "EU" {
+	if received["name"] != "Test Relay" || received["region"] != "EU" {
 		t.Fatalf("payload = %#v", received)
 	}
-	webrtc, ok := received["webrtc"].(map[string]any)
-	if !ok || webrtc["enabled"] != true || webrtc["udpPort"] != float64(8390) ||
-		webrtc["host"] != "relay.example.com" || webrtc["signalUrl"] != "https://relay.example.com/rtc/offer" {
-		t.Fatalf("webrtc payload = %#v", received["webrtc"])
-	}
 	transports, _ := received["transports"].([]any)
-	if len(transports) != 2 || transports[0] != "websocket" || transports[1] != "webrtc" {
+	if len(transports) != 2 {
 		t.Fatalf("transports payload = %#v", received["transports"])
+	}
+	ws, _ := transports[0].(map[string]any)
+	rtc, _ := transports[1].(map[string]any)
+	if ws["type"] != "websocket" || ws["url"] != "wss://relay.example.com" {
+		t.Fatalf("websocket payload = %#v", ws)
+	}
+	if rtc["type"] != "webrtc" || rtc["udpPort"] != float64(8390) ||
+		rtc["host"] != "relay.example.com" || rtc["signalUrl"] != "https://relay.example.com/rtc/offer" {
+		t.Fatalf("webrtc payload = %#v", rtc)
 	}
 }
 
@@ -103,5 +107,19 @@ func TestRegisterFailure(t *testing.T) {
 	cfg := testConfig(server.URL)
 	if _, err := New(cfg, nil).RegisterOnce(context.Background()); err == nil {
 		t.Fatal("expected registration error")
+	}
+}
+
+func TestRegistrationTransportsWebRTCOnly(t *testing.T) {
+	cfg := testConfig("http://127.0.0.1:8391")
+	cfg.Master.Transports = []string{"webrtc"}
+	cfg.Master.SignalURL = "https://signal.example.com/rtc/offer"
+	cfg.RTC.UDPPort = 443
+	transports := registrationTransports(&cfg, "wss://relay.example.com")
+	if len(transports) != 1 || transports[0].Type != "webrtc" {
+		t.Fatalf("transports = %#v", transports)
+	}
+	if transports[0].SignalURL != cfg.Master.SignalURL || transports[0].UDPPort != 443 || transports[0].Host != "relay.example.com" {
+		t.Fatalf("webrtc = %#v", transports[0])
 	}
 }

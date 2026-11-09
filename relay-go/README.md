@@ -166,26 +166,30 @@ docker run --rm -p 8391:8391 ddnet-relay-master
 Endpoints:
 
 ```text
-POST /v1/register    {name,url,region,version,players,transports,webrtc}
-POST /v1/unregister  {url}
+POST /v1/register    {name,region,version,players,transports:[{type,...}]}
+POST /v1/unregister  {transports:[...]}
 GET  /v1/serverlist  {"count":N,"generatedAt":"...","servers":[...]}
 GET  /healthz
 GET  /api/stats
 ```
 
-Registration is only accepted after the master performs a WebSocket handshake
-against `<url>/ws` (the relay exposes `/ws` for exactly this). A failed probe
-returns HTTP 502 and the node is not listed. The relay re-registers every 30 s;
-already-verified nodes are not re-probed on heartbeat. Every 15 minutes
-(`MASTER_PROBE_INTERVAL_MS`) the master probes all nodes and removes any that no
-longer accept a WebSocket connection.
+Registration uses a transports array. The master validates each entry
+independently:
 
-The relay also declares its WebRTC transport:
-`transports:["websocket","webrtc"]` and
-`webrtc:{"enabled":true,"host":"relay.example.com","signalUrl":"https://relay.example.com/rtc/offer","udpPort":8390}`.
-`host` is the public UDP entry hostname/IP (or `RTC_PUBLIC_IP` when set).
-`udpPort` is a fixed shared ICE port; the master rejects WebRTC-enabled
-registrations with `udpPort=0`, so clients never get per-user UDP ports.
+```json
+{"transports":[
+  {"type":"websocket","url":"wss://relay.example.com"},
+  {"type":"webrtc","signalUrl":"https://relay.example.com/rtc/offer",
+   "host":"relay.example.com","udpPort":8390,"origin":"https://play.example.com"}
+]}
+```
+
+WebSocket entries are checked with an RFC 6455 handshake against `<url>/ws`;
+WebRTC entries are checked by creating a real pion DataChannel. At least one
+entry must pass. The server list exposes only verified transports. A relay can
+register only WebRTC with `RELAY_MASTER_TRANSPORTS=webrtc` and an explicit
+`RELAY_MASTER_SIGNAL_URL`. Every 15 minutes each verified transport is checked;
+a failed transport is removed and the node is removed only when none remain.
 
 Relay-side configuration (defaults shown):
 

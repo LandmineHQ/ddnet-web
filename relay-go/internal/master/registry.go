@@ -1,6 +1,3 @@
-// Package master implements the relay master/registry: relays register
-// themselves, the master verifies them over WebSocket, and the web client
-// fetches the active node list.
 package master
 
 import (
@@ -21,29 +18,32 @@ const (
 	MaxPlayers    = 1000000
 )
 
-// WebRTCInfo is the relay's declared WebRTC transport endpoint. The signal
-// URL is the HTTP(S) /rtc/offer endpoint; UDP port is the shared fixed ICE port.
-type WebRTCInfo struct {
-	Enabled   bool   `json:"enabled"`
-	Host      string `json:"host"`
-	SignalURL string `json:"signalUrl"`
-	UDPPort   int    `json:"udpPort"`
+// Transport is one declared relay endpoint. The type is "websocket" or
+// "webrtc"; only the fields for that type are used.
+type Transport struct {
+	Type      string `json:"type"`
+	URL       string `json:"url,omitempty"`
+	SignalURL string `json:"signalUrl,omitempty"`
+	Host      string `json:"host,omitempty"`
+	UDPPort   int    `json:"udpPort,omitempty"`
+	Origin    string `json:"origin,omitempty"`
 }
 
-// Node is one registered relay.
+// Node is one registered relay. Transports is the requested set; the server
+// only exposes the subset that passed verification/liveness checks.
 type Node struct {
 	Name         string      `json:"name"`
-	URL          string      `json:"url"`
 	Region       string      `json:"region,omitempty"`
 	Version      string      `json:"version,omitempty"`
 	Players      int         `json:"players"`
-	Transports   []string    `json:"transports,omitempty"`
-	WebRTC       *WebRTCInfo `json:"webrtc,omitempty"`
+	Transports   []Transport `json:"transports"`
 	LastSeen     time.Time   `json:"lastSeen"`
 	RegisteredAt time.Time   `json:"registeredAt"`
 	VerifiedAt   time.Time   `json:"verifiedAt,omitempty"`
 	LastChecked  time.Time   `json:"lastChecked,omitempty"`
 	Healthy      bool        `json:"healthy"`
+
+	verified map[string]Transport
 }
 
 // Registry is a concurrency-safe in-memory relay registry.
@@ -65,7 +65,7 @@ func NewRegistry(max int) *Registry {
 	}
 }
 
-// NormalizeURL validates a relay base URL and removes a trailing slash.
+// NormalizeURL validates a relay WebSocket base URL and removes a trailing slash.
 func NormalizeURL(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -95,71 +95,100 @@ func NormalizeURL(raw string) (string, error) {
 	return scheme + "://" + parsed.Host + path, nil
 }
 
-func cleanTransports(values []string) []string {
-	seen := make(map[string]bool)
-	out := make([]string, 0, 3)
-	for _, value := range values {
-		transport := strings.ToLower(strings.TrimSpace(value))
-		if transport == "" || seen[transport] {
-			continue
-		}
-		seen[transport] = true
-		out = append(out, transport)
-		if len(out) >= 8 {
-			break
-		}
+func normalizeOrigin(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
 	}
-	if len(out) == 0 {
-		out = append(out, "websocket")
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("webrtc.origin must be an absolute http(s) origin")
 	}
-	return out
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("webrtc.origin must use http:// or https://")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", errors.New("webrtc.origin must not include a path")
+	}
+	return parsed.Scheme + "://" + parsed.Host, nil
 }
 
-func normalizeWebRTC(raw *WebRTCInfo, transports []string) (*WebRTCInfo, []string, error) {
-	if raw == nil {
-		return nil, transports, nil
+// NormalizeTransport validates one transport declaration.
+func NormalizeTransport(raw Transport) (Transport, error) {
+	transport := Transport{
+		Type:      strings.ToLower(strings.TrimSpace(raw.Type)),
+		URL:       strings.TrimSpace(raw.URL),
+		SignalURL: strings.TrimSpace(raw.SignalURL),
+		Host:      strings.TrimSpace(raw.Host),
+		UDPPort:   raw.UDPPort,
+		Origin:    strings.TrimSpace(raw.Origin),
 	}
-	info := &WebRTCInfo{Enabled: raw.Enabled, Host: strings.TrimSpace(raw.Host), UDPPort: raw.UDPPort}
-	signal := strings.TrimSpace(raw.SignalURL)
-	if info.UDPPort < 0 || info.UDPPort > 65535 {
-		return nil, transports, errors.New("webrtc.udpPort must be between 0 and 65535")
-	}
-	if info.Enabled {
-		if info.UDPPort == 0 {
-			return nil, transports, errors.New("webrtc.udpPort must be a fixed port (1-65535) when WebRTC is enabled")
+	switch transport.Type {
+	case "ws", "wss", "websocket":
+		transport.Type = "websocket"
+		if transport.SignalURL != "" || transport.Host != "" || transport.UDPPort != 0 || transport.Origin != "" {
+			return Transport{}, errors.New("websocket transport must only set type and url")
 		}
-		if info.Host == "" {
-			return nil, transports, errors.New("webrtc.host is required when WebRTC is enabled")
+		normalized, err := NormalizeURL(transport.URL)
+		if err != nil {
+			return Transport{}, err
 		}
-		if !validWebRTCHost(info.Host) {
-			return nil, transports, errors.New("webrtc.host must be a hostname or IP address")
+		transport.URL = normalized
+		return transport, nil
+	case "webrtc", "rtc":
+		transport.Type = "webrtc"
+		if transport.URL != "" {
+			return Transport{}, errors.New("webrtc transport must use signalUrl, not url")
 		}
-		parsed, err := url.Parse(signal)
+		if transport.Host == "" {
+			return Transport{}, errors.New("webrtc.host is required")
+		}
+		if !validWebRTCHost(transport.Host) {
+			return Transport{}, errors.New("webrtc.host must be a hostname or IP address")
+		}
+		if transport.UDPPort <= 0 || transport.UDPPort > 65535 {
+			return Transport{}, errors.New("webrtc.udpPort must be a fixed port (1-65535)")
+		}
+		parsed, err := url.Parse(transport.SignalURL)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			return nil, transports, errors.New("webrtc.signalUrl must be an http:// or https:// URL")
+			return Transport{}, errors.New("webrtc.signalUrl must be an http:// or https:// URL")
 		}
 		if parsed.RawQuery != "" || parsed.Fragment != "" {
-			return nil, transports, errors.New("webrtc.signalUrl must not include a query or fragment")
+			return Transport{}, errors.New("webrtc.signalUrl must not include a query or fragment")
 		}
-		info.SignalURL = strings.TrimRight(signal, "/")
-		hasWebRTC := false
-		for _, transport := range transports {
-			if transport == "webrtc" {
-				hasWebRTC = true
-				break
-			}
+		transport.SignalURL = strings.TrimRight(transport.SignalURL, "/")
+		origin, err := normalizeOrigin(transport.Origin)
+		if err != nil {
+			return Transport{}, err
 		}
-		if !hasWebRTC {
-			transports = append(transports, "webrtc")
-		}
-	} else {
-		info.SignalURL = signal
+		transport.Origin = origin
+		return transport, nil
+	default:
+		return Transport{}, fmt.Errorf("unsupported transport type %q", raw.Type)
 	}
-	return info, transports, nil
+}
+
+func normalizeTransports(values []Transport) ([]Transport, error) {
+	if len(values) == 0 {
+		return nil, errors.New("at least one transport is required")
+	}
+	out := make([]Transport, 0, 2)
+	seen := make(map[string]bool)
+	for _, raw := range values {
+		transport, err := NormalizeTransport(raw)
+		if err != nil {
+			return nil, err
+		}
+		if seen[transport.Type] {
+			return nil, fmt.Errorf("duplicate transport %q", transport.Type)
+		}
+		seen[transport.Type] = true
+		out = append(out, transport)
+	}
+	return out, nil
 }
 
 func validWebRTCHost(host string) bool {
-	// A bare IPv6 address may contain colons; accept it via netip first.
 	if _, err := netip.ParseAddr(host); err == nil {
 		return true
 	}
@@ -192,79 +221,151 @@ func cleanText(value string, max int) string {
 	return text
 }
 
-// Register inserts or refreshes a node. For existing nodes it preserves the
-// verification time; the caller verifies new nodes over WebSocket.
+func transportID(transport Transport) string {
+	return transport.Type + "|" + transport.URL + "|" + transport.SignalURL
+}
+
+// NodeKey returns the stable registry key for a node. WebSocket is the primary
+// transport when present; WebRTC-only nodes use the signaling URL.
+func NodeKey(transports []Transport) (string, error) {
+	normalized, err := normalizeTransports(transports)
+	if err != nil {
+		return "", err
+	}
+	for _, transport := range normalized {
+		if transport.Type == "websocket" {
+			return "websocket:" + transport.URL, nil
+		}
+	}
+	return "webrtc:" + normalized[0].SignalURL, nil
+}
+
+func verifiedMap(transports []Transport) map[string]Transport {
+	verified := make(map[string]Transport, len(transports))
+	for _, transport := range transports {
+		verified[transportID(transport)] = transport
+	}
+	return verified
+}
+
+// Register inserts or refreshes a node. Existing verification is retained only
+// for transports that are unchanged in the new request.
 func (r *Registry) Register(node Node) (Node, error) {
-	normalized, err := NormalizeURL(node.URL)
+	transports, err := normalizeTransports(node.Transports)
+	if err != nil {
+		return Node{}, err
+	}
+	key, err := NodeKey(transports)
 	if err != nil {
 		return Node{}, err
 	}
 	name := cleanText(node.Name, MaxNameLen)
 	if name == "" {
-		name = normalized
+		name = key
 	}
 	if node.Players < 0 || node.Players > MaxPlayers {
 		return Node{}, errors.New("players must be between 0 and 1000000")
 	}
-	transports := cleanTransports(node.Transports)
-	webrtc, transports, err := normalizeWebRTC(node.WebRTC, transports)
-	if err != nil {
-		return Node{}, err
-	}
 	now := r.now().UTC()
 	entry := Node{
 		Name:         name,
-		URL:          normalized,
 		Region:       cleanText(node.Region, MaxRegionLen),
 		Version:      cleanText(node.Version, MaxVersionLen),
 		Players:      node.Players,
 		Transports:   transports,
-		WebRTC:       webrtc,
 		LastSeen:     now,
 		RegisteredAt: now,
+		verified:     make(map[string]Transport),
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if existing, ok := r.nodes[normalized]; ok {
+	if existing, ok := r.nodes[key]; ok {
 		entry.RegisteredAt = existing.RegisteredAt
 		entry.VerifiedAt = existing.VerifiedAt
 		entry.LastChecked = existing.LastChecked
-		entry.Healthy = existing.Healthy
-		r.nodes[normalized] = &entry
+		for _, transport := range transports {
+			if old, ok := existing.verified[transportID(transport)]; ok {
+				entry.verified[transportID(old)] = old
+			}
+		}
+		entry.Healthy = len(entry.verified) > 0
+		r.nodes[key] = &entry
 		return entry, nil
 	}
 	if len(r.nodes) >= r.max {
 		return Node{}, fmt.Errorf("registry is full (max %d nodes)", r.max)
 	}
-	r.nodes[normalized] = &entry
+	r.nodes[key] = &entry
 	return entry, nil
 }
 
-// MarkVerified marks a node as verified and healthy.
-func (r *Registry) MarkVerified(rawURL string, verified time.Time) {
-	normalized, err := NormalizeURL(rawURL)
+// MarkTransportVerified marks one exact transport endpoint as verified.
+func (r *Registry) MarkTransportVerified(key string, transport Transport, verified time.Time) {
+	normalized, err := NormalizeTransport(transport)
 	if err != nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if node, ok := r.nodes[normalized]; ok {
-		node.VerifiedAt = verified.UTC()
-		node.LastChecked = verified.UTC()
-		node.Healthy = true
+	node, ok := r.nodes[key]
+	if !ok {
+		return
 	}
+	if node.verified == nil {
+		node.verified = make(map[string]Transport)
+	}
+	node.verified[transportID(normalized)] = normalized
+	node.VerifiedAt = verified.UTC()
+	node.LastChecked = verified.UTC()
+	node.Healthy = true
 }
 
-// MarkChecked updates the health check result without changing verification.
-func (r *Registry) MarkChecked(rawURL string, checked time.Time, healthy bool) {
-	normalized, err := NormalizeURL(rawURL)
-	if err != nil {
-		return
-	}
+// MarkTransportFailed removes a failed transport; the node remains if another
+// verified transport is still available.
+func (r *Registry) MarkTransportFailed(key string, transport Transport) {
+	id := transportID(transport)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if node, ok := r.nodes[normalized]; ok {
+	node, ok := r.nodes[key]
+	if !ok {
+		return
+	}
+	delete(node.verified, id)
+	node.LastChecked = r.now().UTC()
+	node.Healthy = len(node.verified) > 0
+}
+
+// VerifiedTransports returns the verified endpoints for a node.
+func (r *Registry) VerifiedTransports(key string) []Transport {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	node, ok := r.nodes[key]
+	if !ok {
+		return nil
+	}
+	return node.verifiedTransports()
+}
+
+// HasVerified reports whether a node has at least one verified transport.
+func (r *Registry) HasVerified(key string) bool {
+	return len(r.VerifiedTransports(key)) > 0
+}
+
+func (n *Node) verifiedTransports() []Transport {
+	out := make([]Transport, 0, len(n.verified))
+	for _, transport := range n.verified {
+		out = append(out, transport)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
+	return out
+}
+
+// MarkChecked updates the health check timestamps without changing verification.
+func (r *Registry) MarkChecked(key string, checked time.Time, healthy bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if node, ok := r.nodes[key]; ok {
 		node.LastChecked = checked.UTC()
 		node.Healthy = healthy
 		if healthy {
@@ -273,53 +374,60 @@ func (r *Registry) MarkChecked(rawURL string, checked time.Time, healthy bool) {
 	}
 }
 
-// Get returns a copy of a node.
-func (r *Registry) Get(rawURL string) (Node, bool) {
-	normalized, err := NormalizeURL(rawURL)
-	if err != nil {
-		return Node{}, false
-	}
+// Get returns a copy of a node by key.
+func (r *Registry) Get(key string) (Node, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	node, ok := r.nodes[normalized]
+	node, ok := r.nodes[key]
 	if !ok {
 		return Node{}, false
 	}
-	return *node, true
+	copy := *node
+	copy.verified = verifiedMap(node.verifiedTransports())
+	return copy, true
 }
 
-// Remove deletes a node.
-func (r *Registry) Remove(rawURL string) bool {
-	normalized, err := NormalizeURL(rawURL)
-	if err != nil {
-		return false
-	}
+// Remove deletes a node by key.
+func (r *Registry) Remove(key string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.nodes[normalized]; !ok {
+	if _, ok := r.nodes[key]; !ok {
 		return false
 	}
-	delete(r.nodes, normalized)
+	delete(r.nodes, key)
 	return true
 }
 
-// List returns verified nodes sorted by name and URL.
+// List returns nodes with at least one verified transport, exposing only those
+// verified transports.
 func (r *Registry) List() []Node {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]Node, 0, len(r.nodes))
 	for _, node := range r.nodes {
-		if node.VerifiedAt.IsZero() || !node.Healthy {
+		verified := node.verifiedTransports()
+		if node.VerifiedAt.IsZero() || !node.Healthy || len(verified) == 0 {
 			continue
 		}
-		out = append(out, *node)
+		copy := *node
+		copy.Transports = verified
+		copy.verified = verifiedMap(verified)
+		out = append(out, copy)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
 		}
-		return out[i].URL < out[j].URL
+		return strings.Join(transportIDs(out[i].Transports), ",") < strings.Join(transportIDs(out[j].Transports), ",")
 	})
+	return out
+}
+
+func transportIDs(transports []Transport) []string {
+	out := make([]string, 0, len(transports))
+	for _, transport := range transports {
+		out = append(out, transportID(transport))
+	}
 	return out
 }
 
@@ -329,9 +437,13 @@ func (r *Registry) All() []Node {
 	defer r.mu.RUnlock()
 	out := make([]Node, 0, len(r.nodes))
 	for _, node := range r.nodes {
-		out = append(out, *node)
+		copy := *node
+		copy.verified = verifiedMap(node.verifiedTransports())
+		out = append(out, copy)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].URL < out[j].URL })
+	sort.Slice(out, func(i, j int) bool {
+		return strings.Join(transportIDs(out[i].Transports), ",") < strings.Join(transportIDs(out[j].Transports), ",")
+	})
 	return out
 }
 

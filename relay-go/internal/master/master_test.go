@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/pion/webrtc/v4"
 )
 
 func testWSRelay(t *testing.T) (*httptest.Server, string) {
@@ -44,6 +47,73 @@ func testWSRelay(t *testing.T) (*httptest.Server, string) {
 	}))
 	t.Cleanup(server.Close)
 	return server, "ws" + strings.TrimPrefix(server.URL, "http")
+}
+
+func testRTCRelay(t *testing.T) string {
+	t.Helper()
+	var mu sync.Mutex
+	var peers []*webrtc.PeerConnection
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rtc/offer" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Type string `json:"type"`
+			SDP  string `json:"sdp"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SDP == "" {
+			http.Error(w, "bad offer", http.StatusBadRequest)
+			return
+		}
+		pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				_ = dc.Send(msg.Data)
+			})
+		})
+		if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: req.SDP}); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		answer, err := pc.CreateAnswer(nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		gather := webrtc.GatheringCompletePromise(pc)
+		if err := pc.SetLocalDescription(answer); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		<-gather
+		mu.Lock()
+		peers = append(peers, pc)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"type": "answer", "sdp": pc.LocalDescription().SDP})
+	}))
+	t.Cleanup(func() {
+		server.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, pc := range peers {
+			_ = pc.Close()
+		}
+	})
+	return server.URL + "/rtc/offer"
+}
+
+func TestProbeWebRTC(t *testing.T) {
+	signalURL := testRTCRelay(t)
+	transport := Transport{Type: "webrtc", SignalURL: signalURL, Host: "relay.example.com", UDPPort: 443}
+	if err := ProbeWebRTC(context.Background(), transport, 5*time.Second); err != nil {
+		t.Fatalf("probe WebRTC: %v", err)
+	}
 }
 
 func TestNormalizeURL(t *testing.T) {
@@ -80,24 +150,31 @@ func TestProbeWebSocket(t *testing.T) {
 
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry(2)
-	node, err := registry.Register(Node{Name: "A", URL: "ws://127.0.0.1:8390"})
+	wsTransport := Transport{Type: "websocket", URL: "ws://127.0.0.1:8390"}
+	keyA, err := NodeKey([]Transport{wsTransport})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Register(Node{Name: "A", Transports: []Transport{wsTransport}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(registry.List()) != 0 {
 		t.Fatal("unverified node must not be listed")
 	}
-	registry.MarkVerified(node.URL, time.Now())
+	registry.MarkTransportVerified(keyA, wsTransport, time.Now())
 	if len(registry.List()) != 1 {
 		t.Fatal("verified node missing")
 	}
-	if _, err := registry.Register(Node{Name: "B", URL: "ws://127.0.0.1:8391"}); err != nil {
+	wsB := Transport{Type: "websocket", URL: "ws://127.0.0.1:8391"}
+	if _, err := registry.Register(Node{Name: "B", Transports: []Transport{wsB}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := registry.Register(Node{Name: "C", URL: "ws://127.0.0.1:8392"}); err == nil {
+	wsC := Transport{Type: "websocket", URL: "ws://127.0.0.1:8392"}
+	if _, err := registry.Register(Node{Name: "C", Transports: []Transport{wsC}}); err == nil {
 		t.Fatal("expected registry full error")
 	}
-	registry.MarkChecked("ws://127.0.0.1:8391", time.Now(), false)
+	keyB, _ := NodeKey([]Transport{wsB})
+	registry.MarkChecked(keyB, time.Now(), false)
 	if len(registry.List()) != 1 {
 		t.Fatal("unhealthy node must not be listed")
 	}
@@ -131,31 +208,37 @@ func TestHTTPRegisterProbeAndHealth(t *testing.T) {
 	}
 
 	response, decoded := post("/v1/register", map[string]any{
-		"name": "relay", "url": relayURL,
-		"transports": []string{"websocket", "webrtc"},
-		"webrtc":     map[string]any{"enabled": true, "host": "relay.example.com", "signalUrl": "https://relay.example.com/rtc/offer", "udpPort": 3478},
+		"name": "relay",
+		"transports": []map[string]any{
+			{"type": "websocket", "url": relayURL},
+			{"type": "webrtc", "signalUrl": "http://127.0.0.1:1/rtc/offer", "host": "relay.example.com", "udpPort": 3478},
+		},
 	})
 	if response.StatusCode != http.StatusOK || decoded["verified"] != true {
 		t.Fatalf("register failed: status=%d body=%v", response.StatusCode, decoded)
 	}
-	response, decoded = post("/v1/register", map[string]any{"name": "relay", "url": "ws://127.0.0.1:1"})
+	response, decoded = post("/v1/register", map[string]any{
+		"name": "relay", "transports": []map[string]any{{"type": "websocket", "url": "ws://127.0.0.1:1"}},
+	})
 	if response.StatusCode != http.StatusBadGateway {
 		t.Fatalf("unreachable register status=%d body=%v", response.StatusCode, decoded)
 	}
-	response, decoded = post("/v1/register", map[string]any{"name": "bad", "url": "http://example.com"})
+	response, decoded = post("/v1/register", map[string]any{
+		"name": "bad", "transports": []map[string]any{{"type": "websocket", "url": "http://example.com"}},
+	})
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid url status=%d body=%v", response.StatusCode, decoded)
 	}
 	response, decoded = post("/v1/register", map[string]any{
-		"name": "ephemeral-rtc", "url": relayURL,
-		"webrtc": map[string]any{"enabled": true, "host": "relay.example.com", "signalUrl": "https://relay.example.com/rtc/offer", "udpPort": 0},
+		"name":       "ephemeral-rtc",
+		"transports": []map[string]any{{"type": "webrtc", "signalUrl": "https://relay.example.com/rtc/offer", "host": "relay.example.com", "udpPort": 0}},
 	})
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("ephemeral webrtc port status=%d body=%v", response.StatusCode, decoded)
 	}
 	response, decoded = post("/v1/register", map[string]any{
-		"name": "no-rtc-host", "url": relayURL,
-		"webrtc": map[string]any{"enabled": true, "signalUrl": "https://relay.example.com/rtc/offer", "udpPort": 3478},
+		"name":       "no-rtc-host",
+		"transports": []map[string]any{{"type": "webrtc", "signalUrl": "https://relay.example.com/rtc/offer", "udpPort": 3478}},
 	})
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing webrtc host status=%d body=%v", response.StatusCode, decoded)
@@ -171,20 +254,15 @@ func TestHTTPRegisterProbeAndHealth(t *testing.T) {
 	}
 	_ = json.NewDecoder(listResponse.Body).Decode(&list)
 	listResponse.Body.Close()
-	if list.Count != 1 || list.Servers[0].URL != relayURL {
+	if list.Count != 1 || len(list.Servers[0].Transports) != 1 || list.Servers[0].Transports[0].URL != relayURL {
 		t.Fatalf("serverlist = %+v", list)
-	}
-	if list.Servers[0].WebRTC == nil || list.Servers[0].WebRTC.UDPPort != 3478 ||
-		list.Servers[0].WebRTC.Host != "relay.example.com" || list.Servers[0].WebRTC.SignalURL == "" {
-		t.Fatalf("webrtc declaration missing: %+v", list.Servers[0].WebRTC)
-	}
-	if len(list.Servers[0].Transports) != 2 {
-		t.Fatalf("transports = %+v", list.Servers[0].Transports)
 	}
 
 	// Existing verified nodes are not re-probed on heartbeat.
 	wsServer.Close()
-	response, decoded = post("/v1/register", map[string]any{"name": "relay2", "url": relayURL})
+	response, decoded = post("/v1/register", map[string]any{
+		"name": "relay2", "transports": []map[string]any{{"type": "websocket", "url": relayURL}},
+	})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("re-register should not probe: status=%d body=%v", response.StatusCode, decoded)
 	}
@@ -196,6 +274,47 @@ func TestHTTPRegisterProbeAndHealth(t *testing.T) {
 	}
 	if registry.Count() != 0 {
 		t.Fatal("dead relay still registered")
+	}
+}
+
+func TestHTTPRegisterWebRTCOnly(t *testing.T) {
+	signalURL := testRTCRelay(t)
+	registry := NewRegistry(10)
+	handler, err := NewHandler(Options{Registry: registry, ProbeTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	body, _ := json.Marshal(map[string]any{
+		"name": "rtc-only",
+		"transports": []map[string]any{{
+			"type": "webrtc", "signalUrl": signalURL,
+			"host": "relay.example.com", "udpPort": 443,
+		}},
+	})
+	response, err := http.Post(server.URL+"/v1/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var decoded map[string]any
+	_ = json.NewDecoder(response.Body).Decode(&decoded)
+	if response.StatusCode != http.StatusOK || decoded["verified"] != true {
+		t.Fatalf("webrtc-only register failed: status=%d body=%v", response.StatusCode, decoded)
+	}
+	listResponse, err := http.Get(server.URL + "/v1/serverlist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResponse.Body.Close()
+	var list struct {
+		Count   int    `json:"count"`
+		Servers []Node `json:"servers"`
+	}
+	_ = json.NewDecoder(listResponse.Body).Decode(&list)
+	if list.Count != 1 || len(list.Servers[0].Transports) != 1 || list.Servers[0].Transports[0].Type != "webrtc" {
+		t.Fatalf("webrtc-only serverlist = %+v", list)
 	}
 }
 

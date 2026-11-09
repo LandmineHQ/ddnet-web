@@ -115,6 +115,7 @@ export function buildUdpWsUrl(options = {}) {
   if (protocol === 7) query.push('protocol=7');
   const token = typeof options.token === 'string' ? options.token.trim() : '';
   if (token) query.push('token=' + encodeURIComponent(token));
+  if (options.transport === 'webrtc') query.push('transport=webrtc');
   if (query.length) url += '?' + query.join('&');
   return { ok: true, url, hostPort, relay: norm };
 }

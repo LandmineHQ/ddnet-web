@@ -60,16 +60,14 @@ func NewHandler(options Options) (*Handler, error) {
 
 type registerRequest struct {
 	Name       string      `json:"name"`
-	URL        string      `json:"url"`
 	Region     string      `json:"region"`
 	Version    string      `json:"version"`
 	Players    int         `json:"players"`
-	Transports []string    `json:"transports"`
-	WebRTC     *WebRTCInfo `json:"webrtc"`
+	Transports []Transport `json:"transports"`
 }
 
 type unregisterRequest struct {
-	URL string `json:"url"`
+	Transports []Transport `json:"transports"`
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +117,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusTooManyRequests, "too many registrations")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
 	defer r.Body.Close()
 	var req registerRequest
 	decoder := json.NewDecoder(r.Body)
@@ -128,59 +126,94 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	normalized, err := NormalizeURL(req.URL)
+	transports, err := normalizeTransports(req.Transports)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	existing, exists := h.registry.Get(normalized)
-	needsProbe := !exists || existing.VerifiedAt.IsZero()
-	probeStart := time.Now()
-	if needsProbe {
-		if err := ProbeWebSocket(r.Context(), normalized, h.options.ProbeTimeout); err != nil {
-			if h.options.Logger != nil {
-				h.options.Logger.Warn("master_register_probe_failed",
-					logx.F("node", normalized),
-					logx.F("remoteIp", ip),
-					logx.F("error", err.Error()),
-				)
-			}
-			h.writeError(w, http.StatusBadGateway, "relay WebSocket probe failed: "+err.Error())
-			return
+	key, err := NodeKey(transports)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_, exists := h.registry.Get(key)
+	existingVerified := make(map[string]Transport)
+	if exists {
+		for _, transport := range h.registry.VerifiedTransports(key) {
+			existingVerified[transportID(transport)] = transport
 		}
 	}
 	node, err := h.registry.Register(Node{
 		Name:       req.Name,
-		URL:        normalized,
 		Region:     req.Region,
 		Version:    req.Version,
 		Players:    req.Players,
-		Transports: req.Transports,
-		WebRTC:     req.WebRTC,
+		Transports: transports,
 	})
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if needsProbe {
-		h.registry.MarkVerified(node.URL, time.Now().UTC())
+
+	probeStart := time.Now()
+	probed := 0
+	var failures []string
+	for _, transport := range transports {
+		if _, ok := existingVerified[transportID(transport)]; ok {
+			continue
+		}
+		probed++
+		var probeErr error
+		switch transport.Type {
+		case "websocket":
+			probeErr = ProbeWebSocket(r.Context(), transport.URL, h.options.ProbeTimeout)
+		case "webrtc":
+			probeErr = ProbeWebRTC(r.Context(), transport, h.options.ProbeTimeout)
+		default:
+			probeErr = fmt.Errorf("unsupported transport %q", transport.Type)
+		}
+		if probeErr != nil {
+			failures = append(failures, transport.Type+": "+probeErr.Error())
+			if h.options.Logger != nil {
+				h.options.Logger.Warn("master_register_probe_failed",
+					logx.F("node", key),
+					logx.F("transport", transport.Type),
+					logx.F("remoteIp", ip),
+					logx.F("error", probeErr.Error()),
+				)
+			}
+			continue
+		}
+		h.registry.MarkTransportVerified(key, transport, time.Now().UTC())
 	}
+	if !h.registry.HasVerified(key) {
+		h.registry.Remove(key)
+		message := "no relay transport verified"
+		if len(failures) > 0 {
+			message += ": " + strings.Join(failures, "; ")
+		}
+		h.writeError(w, http.StatusBadGateway, message)
+		return
+	}
+	verified := h.registry.VerifiedTransports(key)
 	if h.options.Logger != nil {
 		h.options.Logger.Info("master_register",
-			logx.F("node", node.URL),
+			logx.F("node", key),
 			logx.F("name", node.Name),
 			logx.F("region", node.Region),
 			logx.F("remoteIp", ip),
-			logx.F("probed", needsProbe),
+			logx.F("probed", probed),
+			logx.F("transports", len(verified)),
 			logx.F("probeMs", time.Since(probeStart).Milliseconds()),
 			logx.F("nodes", h.registry.Count()),
 		)
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{
 		"ok":            true,
-		"url":           node.URL,
+		"key":           key,
+		"transports":    verified,
 		"verified":      true,
-		"probed":        needsProbe,
+		"probed":        probed > 0,
 		"probeMs":       time.Since(probeStart).Milliseconds(),
 		"intervalMs":    h.options.HeartbeatInterval.Milliseconds(),
 		"healthCheckMs": h.options.ProbeInterval.Milliseconds(),
@@ -189,14 +222,19 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleUnregister(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
 	defer r.Body.Close()
 	var req unregisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	removed := h.registry.Remove(req.URL)
+	key, err := NodeKey(req.Transports)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	removed := h.registry.Remove(key)
 	h.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed, "count": h.registry.Count()})
 }
 

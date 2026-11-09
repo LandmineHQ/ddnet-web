@@ -557,6 +557,16 @@ func EnvOverrides(env map[string]string) (map[string]any, error) {
 	if value, ok := get("RELAY_MASTER_ADVERTISE_URL"); ok {
 		masterOverrides["advertiseUrl"] = value
 	}
+	if value, ok := get("RELAY_MASTER_SIGNAL_URL"); ok {
+		masterOverrides["signalUrl"] = value
+	}
+	if value, ok := get("RELAY_MASTER_TRANSPORTS"); ok && value != "" {
+		transports, err := ParseList(value)
+		if err != nil {
+			return nil, err
+		}
+		masterOverrides["transports"] = transports
+	}
 	if value, ok := get("RELAY_MASTER_INTERVAL_MS"); ok && value != "" {
 		number, err := parseNumber(value, "RELAY_MASTER_INTERVAL_MS")
 		if err != nil {

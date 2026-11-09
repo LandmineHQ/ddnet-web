@@ -31,7 +31,20 @@ export function sanitizeRelay(raw, options = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: '中继条目必须是对象' };
   }
-  const norm = normalizeRelayBase(typeof raw.url === 'string' ? raw.url : '');
+  const transports = Array.isArray(raw.transports) ? raw.transports.filter((item) => item && typeof item === 'object') : [];
+  let webrtc = raw.webrtc && typeof raw.webrtc === 'object' ? raw.webrtc : null;
+  if (!webrtc && transports.length) {
+    webrtc = transports.find((item) => String(item.type || '').toLowerCase() === 'webrtc') || null;
+  }
+  let rawURL = typeof raw.url === 'string' ? raw.url.trim() : '';
+  if (!rawURL && transports.length) {
+    const ws = transports.find((item) => ['websocket', 'ws', 'wss'].includes(String(item.type || '').toLowerCase()));
+    if (ws && typeof ws.url === 'string') rawURL = ws.url;
+  }
+  if (!rawURL && webrtc && typeof webrtc.signalUrl === 'string') {
+    rawURL = relayBaseFromSignalUrl(webrtc.signalUrl);
+  }
+  const norm = normalizeRelayBase(rawURL);
   if (!norm.ok) return { ok: false, error: '中继地址无效：' + norm.error };
 
   const rawName = typeof raw.name === 'string' ? raw.name.trim() : '';
@@ -41,11 +54,34 @@ export function sanitizeRelay(raw, options = {}) {
   const addedAt = Number.isFinite(raw.addedAt) ? Number(raw.addedAt) : Date.now();
   const source = typeof raw.source === 'string' && raw.source ? raw.source.slice(0, 24) : 'custom';
   const note = typeof raw.note === 'string' ? raw.note.trim().slice(0, 200) : '';
+  const webrtcOnly = Boolean(webrtc) && !transports.some((item) => ['websocket', 'ws', 'wss'].includes(String(item.type || '').toLowerCase()));
 
   return {
     ok: true,
-    relay: { id, name, url: norm.base, token, note, source, addedAt, ...(options.keepTimestamps ? {} : {}) },
+    relay: {
+      id,
+      name,
+      url: norm.base,
+      token,
+      note,
+      source,
+      addedAt,
+      transports,
+      webrtc,
+      webrtcOnly,
+    },
   };
+}
+
+function relayBaseFromSignalUrl(raw) {
+  try {
+    const parsed = new URL(String(raw).trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    const path = parsed.pathname.replace(/\/rtc\/offer\/?$/i, '').replace(/\/+$/, '');
+    return (parsed.protocol === 'https:' ? 'wss://' : 'ws://') + parsed.host + path;
+  } catch (error) {
+    return '';
+  }
 }
 
 export function serializeRelays(relays) {
@@ -59,6 +95,9 @@ export function serializeRelays(relays) {
       note: relay.note,
       source: relay.source,
       addedAt: relay.addedAt,
+      transports: Array.isArray(relay.transports) ? relay.transports : [],
+      webrtc: relay.webrtc || null,
+      webrtcOnly: Boolean(relay.webrtcOnly),
     })),
   });
 }
@@ -419,6 +458,8 @@ export async function loadMasterRelays(fetchImpl, url = defaultRelayMasterUrl())
         source: 'master',
         name: item.name,
         url: item.url,
+        transports: item.transports,
+        webrtc: item.webrtc,
         note: noteParts.join(' · '),
       });
       if (!result.ok || seen.has(result.relay.url)) continue;

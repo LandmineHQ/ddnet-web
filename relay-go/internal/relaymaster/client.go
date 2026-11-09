@@ -17,21 +17,21 @@ import (
 	"ddnet-relay-go/internal/logx"
 )
 
-type webRTCInfo struct {
-	Enabled   bool   `json:"enabled"`
-	Host      string `json:"host"`
-	SignalURL string `json:"signalUrl"`
-	UDPPort   int    `json:"udpPort"`
+type transport struct {
+	Type      string `json:"type"`
+	URL       string `json:"url,omitempty"`
+	SignalURL string `json:"signalUrl,omitempty"`
+	Host      string `json:"host,omitempty"`
+	UDPPort   int    `json:"udpPort,omitempty"`
+	Origin    string `json:"origin,omitempty"`
 }
 
 type registerRequest struct {
 	Name       string      `json:"name"`
-	URL        string      `json:"url"`
 	Region     string      `json:"region"`
 	Version    string      `json:"version"`
 	Players    int         `json:"players"`
-	Transports []string    `json:"transports"`
-	WebRTC     *webRTCInfo `json:"webrtc"`
+	Transports []transport `json:"transports"`
 }
 
 type registerResponse struct {
@@ -66,23 +66,13 @@ func (c *Client) RegisterOnce(ctx context.Context) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	transports := []string{"websocket"}
-	if c.Config.RTC.Enabled {
-		transports = append(transports, "webrtc")
-	}
+	transports := registrationTransports(&c.Config, advertise)
 	payload, err := json.Marshal(registerRequest{
 		Name:       c.Config.Name,
-		URL:        advertise,
 		Region:     c.Config.Region,
 		Version:    config.Version,
 		Players:    0,
 		Transports: transports,
-		WebRTC: &webRTCInfo{
-			Enabled:   c.Config.RTC.Enabled,
-			Host:      rtcHost(c.Config.RTC, advertise),
-			SignalURL: rtcSignalURL(advertise),
-			UDPPort:   c.Config.RTC.UDPPort,
-		},
 	})
 	if err != nil {
 		return 0, err
@@ -130,8 +120,13 @@ func rtcHost(rtc config.RTC, relayURL string) string {
 }
 
 // rtcSignalURL derives the HTTP(S) WebRTC signaling endpoint from the public
-// relay URL: wss://host/base -> https://host/base/rtc/offer.
-func rtcSignalURL(relayURL string) string {
+// relay URL: wss://host/base -> https://host/base/rtc/offer. An explicit
+// master.signalUrl wins, which allows WebRTC-only relays behind a separate
+// HTTP(S) signaling endpoint.
+func rtcSignalURL(cfg *config.Config, relayURL string) string {
+	if value := strings.TrimSpace(cfg.Master.SignalURL); value != "" {
+		return strings.TrimRight(value, "/")
+	}
 	parsed, err := url.Parse(relayURL)
 	if err != nil || parsed.Host == "" {
 		return ""
@@ -142,6 +137,42 @@ func rtcSignalURL(relayURL string) string {
 	}
 	path := strings.TrimRight(parsed.EscapedPath(), "/") + "/rtc/offer"
 	return scheme + "://" + parsed.Host + path
+}
+
+// registrationTransports builds the break-change transport array. By default
+// a RTC-enabled relay advertises WebSocket + WebRTC; a WebRTC-only deployment
+// can set RELAY_MASTER_TRANSPORTS=webrtc.
+func registrationTransports(cfg *config.Config, advertise string) []transport {
+	desired := cfg.Master.Transports
+	if len(desired) == 0 {
+		desired = []string{"websocket"}
+		if cfg.RTC.Enabled {
+			desired = append(desired, "webrtc")
+		}
+	}
+	out := make([]transport, 0, len(desired))
+	for _, raw := range desired {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "websocket":
+			out = append(out, transport{Type: "websocket", URL: advertise})
+		case "webrtc":
+			origin := ""
+			if len(cfg.Auth.OriginAllowlist) > 0 {
+				origin = strings.TrimSpace(cfg.Auth.OriginAllowlist[0])
+				if origin == "*" {
+					origin = "https://master.landmine.top"
+				}
+			}
+			out = append(out, transport{
+				Type:      "webrtc",
+				SignalURL: rtcSignalURL(cfg, advertise),
+				Host:      rtcHost(cfg.RTC, advertise),
+				UDPPort:   cfg.RTC.UDPPort,
+				Origin:    origin,
+			})
+		}
+	}
+	return out
 }
 
 // Run registers immediately, then heartbeats until ctx is cancelled.
@@ -216,7 +247,9 @@ func (c *Client) unregister() {
 	if err != nil {
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{"url": advertise})
+	payload, _ := json.Marshal(map[string]any{
+		"transports": registrationTransports(&c.Config, advertise),
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
