@@ -13,6 +13,9 @@
 /build/cargo-home/
 /build/logs/
 /dist/
+/docs-site/node_modules/
+/docs-site/.vitepress/cache/
+/docs-site/.vitepress/dist/
 /web/tools/screenshots/
 /tests/out/
 /tests/tls/

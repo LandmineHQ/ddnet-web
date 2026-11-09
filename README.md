@@ -12,7 +12,7 @@
 
 *仓库名：`ddnet-web`。在浏览器里玩 DDNet 0.6/0.7；游戏流量优先走 WebRTC DataChannel，失败自动回退 WebSocket；relay master 负责节点注册、首次 WS 验证和 15 分钟存活检查。*
 
-**文档：** [快速开始](docs/QUICKSTART.md) · [架构与约定](AGENTS.md) · [生产 nginx](deploy/README.md) · [前端说明](web/README.md) · [Go relay](relay-go/README.md)
+**文档：** [快速开始](docs/QUICKSTART.md) · [Wiki](docs-site/index.md) · [架构与约定](AGENTS.md) · [生产 nginx](deploy/README.md) · [前端说明](web/README.md) · [Go relay](relay-go/README.md)
 
 ![DDNet Web 后端选择](docs/screenshots/02-relay-list.png)
 
@@ -171,7 +171,9 @@ cd build
 BUILD_TYPE=Release ./build-wasm.sh     # 约 1.5 分钟，产物进 dist/web
 
 cd ..
-scripts/assemble-web.sh                # 组装前端 + manifest.json（改前端后必须重跑）
+# Wiki（可选，首次需要；assemble 会自动把 wiki 构建到 dist/web/wiki）
+npm ci --prefix docs-site
+scripts/assemble-web.sh                # 组装前端 + manifest.json + wiki
 ```
 
 `build-wasm.sh` 默认源码路径是本地 `ddnet-dev/`；上游基线 `ddnet/` 和 worktree `ddnet-dev/` 不纳入本仓库，补丁见 [patches/ddnet-web-client.patch](patches/ddnet-web-client.patch)。
@@ -406,7 +408,7 @@ docker compose -f compose.test.yml --profile test run --rm -T \
 
 [.github/workflows/build.yml](.github/workflows/build.yml) 在 push `main`/`master` 或手动触发时（仅修改 `.github/**` 不触发）：
 
-- 构建 DDNet WASM + web shell → artifact `web-dist`
+- 构建 DDNet WASM + web shell + VitePress wiki → artifact `web-dist`
 - 构建 `relay-linux-amd64` / `relay-master-linux-amd64` → 两个二进制 artifact
 - 构建 `alpine:3.20` 的 relay / relay-master 镜像，并导出 `relay-image` / `relay-master-image`
 - 对两个镜像做真实 `/healthz` 冒烟
@@ -489,6 +491,7 @@ gh run list --workflow=build.yml --limit 10
 ```text
 .github/workflows/     build / pages / publish-ghcr / publish-release
 web/                   前端 Shell（原生 ESM）+ Node 测试 + wasm 资源缓存
+docs-site/             VitePress Wiki（relay/master/WASM API + 部署指南）
 relay-go/              Go relay + relay master + WebRTC/WS/UDP + vendor
 relay/                 旧 Node 中继参考实现（不参与生产）
 relay-go/cmd/master/   relay master 入口
@@ -519,6 +522,7 @@ dist/web/              部署产物（wasm + 前端 + manifest，构建生成）
 | [deploy/nginx.conf](deploy/nginx.conf) | TLS/WSS/静态站点/反代示例 |
 | [web/README.md](web/README.md) | 前端资源缓存、relay master、快捷键 |
 | [relay-go/README.md](relay-go/README.md) | Go relay 配置、API、relay master |
+| [docs-site/index.md](docs-site/index.md) | VitePress Wiki：relay/master API、WASM 桥接、Compose/二进制部署 |
 | [docs/PLAN.md](docs/PLAN.md) | 早期技术分析与路线 |
 | [patches/ddnet-web-client.patch](patches/ddnet-web-client.patch) | 上游 DDNet 补丁（1283 行 / 9 文件） |
 

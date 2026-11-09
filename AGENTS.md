@@ -55,6 +55,7 @@
 | `relay-go/` | **后端节点（Go 1.24 + pion/webrtc，依赖已 vendor）**：WebRTC↔UDP / WS↔UDP、API、鉴权、SSRF、限流、统计；另含 `cmd/master`（relay master）、`internal/master`（注册/WS 探测/健康检查）与 `internal/relaymaster`（relay 侧注册客户端）；`bin/` 为可选的本地预编译产物（不纳入提交） | 后端任务 |
 | `relay/` | 旧 Node 中继（参考实现 + 原测试，保留对照；生产不用） | 只读/对照 |
 | `web/` | 前端站点（原生 ESM 零依赖）+ Node 测试 + 移动端截图工具 | 前端任务 |
+| `docs-site/` | VitePress Wiki：relay/master API、WASM 桥接、compose/二进制部署 | 文档任务 |
 | `compose.dev.yml` | 开发栈：Go 后端 8390 + relay master 8391 + 站点 8392 + https+wss 8443；**不启动本地游戏服务器**，/api/servers 指向 DDNet 官方 Tutorial | 运维任务 |
 | `compose.test.yml` | 测试栈（profiles）：`relay-unit` / `e2e-relay` / `e2e-web` / `syntax-check` / `slow:e2e-reconnect` / `fallback:e2e-rtc-fallback` / `local-server`（可选本地测试服） | 运维任务 |
 | `compose.yml` | 生产：Go relay + relay master（**直接拉取 GHCR latest 镜像**；只绑 127.0.0.1:8390/8391；无 Caddy；TLS/WSS 由生产 nginx 终止，静态站点由 nginx root 到 `dist/web`） | 运维任务 |
@@ -117,9 +118,12 @@
 
 **组装站点（改前端或重建 wasm 后必须执行）**：
 
-    cd /root/test/ddnet-web && scripts/assemble-web.sh
+    cd /root/test/ddnet-web
+    npm ci --prefix docs-site                  # 首次/Wiki 依赖
+    scripts/assemble-web.sh
 
-生成 index.html/app.js/style.css/src/assets + manifest.json(sha256) + _headers。
+生成 index.html/app.js/style.css/src/assets + manifest.json(sha256) + _headers + `wiki/`。
+`assemble-web.sh` 在 `docs-site/node_modules` 存在时会自动构建 VitePress，产物进 `dist/web/wiki/`。
 **坑**：wasm 重建后若忘记 assemble，manifest 里旧的 sha256 与文件不匹配，前端会报
 “资源校验失败/大小不匹配”，进游戏卡在准备阶段。
 
@@ -158,6 +162,9 @@
     # 后端 → DDNet 官方 Tutorial（gie3/inf3 + CONNECT/ACCEPT/NETMSG_INFO；官方服不保证回 map data）
     docker compose -f compose.test.yml --profile test run --rm e2e-relay
 
+    # Wiki（VitePress）：npm ci --prefix docs-site && npm run docs:build --prefix docs-site
+    # 构建后由 assemble-web.sh 复制到 dist/web/wiki
+
     # 前端 Node 测试（82 项）
     cd web && node tools/test-pure.mjs && node tools/test-assets.mjs && node tools/test-latency.mjs \
       && node tools/test-dom.mjs && node tools/test-integration.mjs
@@ -174,7 +181,7 @@
     # 慢速：断开等后端空闲超时（60s）再重连同一服务器（验证死连接重开）
     docker compose -f compose.test.yml --profile slow run --rm e2e-reconnect
 
-    # CI：build.yml 自动构建 web/linux 二进制/alpine 镜像；pages.yml 自动发布 Pages；
+    # CI：build.yml 自动构建 web/wiki/linux 二进制/alpine 镜像；pages.yml 自动发布 Pages；
     # publish-ghcr.yml / publish-release.yml 需要 build.yml 的 run_id 手动触发。
     # 只构建 linux/amd64（Alpine 兼容），不生成其他平台。
 
@@ -479,6 +486,8 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
     .github/workflows/publish-ghcr.yml .github/workflows/publish-release.yml
     compose.dev.yml compose.test.yml compose.yml deploy/nginx.conf
     scripts/dev-up.sh scripts/dev-down.sh scripts/assemble-web.sh
+    docs-site/.vitepress/config.mts docs-site/index.md docs-site/guide docs-site/api
+    scripts/build-wiki.sh
     tests/e2e/ux_flow.mjs tests/e2e/relay_join.mjs tests/e2e/mobile_mode.mjs
     tests/e2e/rtc_transport.mjs tests/e2e/server_list.mjs tests/e2e/master_discovery.mjs tests/e2e/desktop_touch.mjs tests/e2e/ime_clipboard.mjs tests/e2e/relay_reconnect.mjs
     docs/QUICKSTART.md docs/PLAN.md

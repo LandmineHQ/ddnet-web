@@ -22,6 +22,14 @@ for item in index.html style.css app.js src assets serve.mjs README.md; do
 	fi
 done
 
+if [ -d "$ROOT/docs-site" ]; then
+	if [ -x "$ROOT/docs-site/node_modules/.bin/vitepress" ] || [ "${BUILD_WIKI:-0}" = "1" ]; then
+		DIST="$DIST" VITEPRESS_BASE="${VITEPRESS_BASE:-/wiki/}" "$ROOT/scripts/build-wiki.sh"
+	else
+		echo "   ! wiki skipped (run: npm ci --prefix docs-site)"
+	fi
+fi
+
 echo "== checking wasm artifacts in $DIST"
 missing=0
 for f in DDNet.js DDNet.wasm DDNet.data; do

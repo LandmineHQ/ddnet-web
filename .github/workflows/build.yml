@@ -49,6 +49,17 @@ jobs:
           git -C ddnet-dev apply "$GITHUB_WORKSPACE/patches/ddnet-web-client.patch"
           git -C ddnet-dev diff --stat | head -20
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install wiki dependencies
+        shell: bash
+        run: npm ci --prefix docs-site --no-audit --no-fund
+
       - name: Build WASM
         shell: bash
         env:
@@ -72,6 +83,7 @@ jobs:
           ROOT="$GITHUB_WORKSPACE" DIST="$GITHUB_WORKSPACE/dist/web" ./scripts/assemble-web.sh
           test -s dist/web/manifest.json
           test -s dist/web/DDNet.wasm
+          test -s dist/web/wiki/index.html
           du -sh dist/web
 
       - name: Upload wasm build log on failure
@@ -100,6 +112,7 @@ jobs:
             echo "- commit: \`$GITHUB_SHA\`"
             echo "- artifact: \`web-dist\`"
             echo "- size: $(du -sh dist/web | cut -f1)"
+            echo "- wiki: $(du -sh dist/web/wiki | cut -f1)"
             echo "- manifest: $(python3 -c 'import json; d=json.load(open("dist/web/manifest.json")); print(d["version"])')"
           } >> "$GITHUB_STEP_SUMMARY"
 

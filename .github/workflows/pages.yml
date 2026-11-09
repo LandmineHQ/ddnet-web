@@ -35,6 +35,22 @@ jobs:
     # deploy-pages 默认只等 10 分钟，sync 大文件时容易误超时。
     timeout-minutes: 40
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install wiki dependencies
+        shell: bash
+        run: npm ci --prefix docs-site --no-audit --no-fund
+
       - name: Download web-dist from triggering build
         if: github.event_name == 'workflow_run'
         uses: actions/download-artifact@v4
@@ -52,6 +68,16 @@ jobs:
           path: web-dist
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebuild wiki for GitHub Pages base
+        shell: bash
+        env:
+          PAGES_BASE: ${{ vars.PAGES_BASE }}
+        run: |
+          set -euo pipefail
+          base="${PAGES_BASE:-/${GITHUB_REPOSITORY#*/}/wiki/}"
+          DIST="$PWD/web-dist" VITEPRESS_BASE="$base" ./scripts/build-wiki.sh
+          test -s web-dist/wiki/index.html
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

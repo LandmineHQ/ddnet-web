@@ -1194,3 +1194,6 @@ body.is-scoreboard-open .touch-hint,
 html[data-device='desktop'] body.is-menu-open .touch-hint {
   display: none !important;
 }
+
+/* Wiki 入口 */
+.wiki-link { text-decoration: none; }
