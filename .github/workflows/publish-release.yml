@@ -21,7 +21,7 @@ on:
       draft:
         description: "创建为 draft"
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
