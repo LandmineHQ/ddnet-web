@@ -358,6 +358,16 @@ DDNet 的 `cl_touch_controls` 会存进 IndexedDB。移动端玩过之后切到�
 - 按住 Tab/ESC 时浏览器会持续发 repeat keydown；在 window capture 阶段直接截断 `event.repeat`，
   避免 DDNet 反复 +scoreboard 和网页类名反复切换触发布局。
 
+### 7.22b 桌面菜单 / 鼠标：不要从 JS 定时器 ccall
+- Asyncify 主循环在 `emscripten_sleep` 时，从 `setInterval` / `mousemove` 调用
+  `Module.ccall('DDWeb_IsMenuOpen' / 'DDWeb_SetUiMousePos' / 'DDWeb_SetAbsoluteMouse')`
+  可能触发整栈 `doRewind`，表现为设置/计分板打开后长时间卡顿。
+- 现在 C++ 主动写/读 JS 共享状态：
+  - `Module.DDWebMenuOpen`（`CGameClient::OnRender` 发布）
+  - `Module.DDWebUiMouseTarget`（C++ `CUi::Update` 读取）
+  - `Module.DDWebAbsoluteMouse`（C++ `CInput::MouseRelative` 读取）
+- Web 侧定时器/鼠标事件只改这些 JS 变量，不再 ccall 进入 wasm。
+
 ### 7.23 wasm 中文 IME / 剪贴板桥
 Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，因此：
 - 中文输入法不会弹候选框；`Ctrl+V` 也没有可粘贴目标；`SDL_GetClipboardText/SetClipboardText`

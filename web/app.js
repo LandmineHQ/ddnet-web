@@ -506,6 +506,7 @@ function bindEvents() {
       // 避免焦点落到 HUD/按钮后键盘输入与渲染节奏异常。
       try { R.canvas.focus({ preventScroll: true }); } catch (error) { /* 忽略 */ }
       setWasmAbsoluteMouse(!locked);
+      if (locked) setUiMouseTarget(null);
       if (!locked) setTimeout(() => scheduleUiMouseSync(), 30);
       log(locked ? '鼠标已捕获（游戏内光标由 DDNet 绘制）' : '鼠标已释放（ESC 菜单打开，游戏内光标接管）');
     }
@@ -571,13 +572,7 @@ function bindEvents() {
       if (S.view !== 'game' || document.pointerLockElement === R.canvas) return;
       const Module = S.runtime && S.runtime.Module;
       let open = S.menuOpen;
-      if (Module && typeof Module.ccall === 'function') {
-        try {
-          open = Module.ccall('DDWeb_IsMenuOpen', 'number', [], []) === 1;
-        } catch (error) {
-          // 旧 wasm：保留当前状态
-        }
-      }
+      if (Module && typeof Module.DDWebMenuOpen === 'boolean') open = Module.DDWebMenuOpen;
       if (!open) {
         setMenuOpen(false);
         requestGamePointerLock();
@@ -1699,7 +1694,7 @@ function handleExit(status) {
   hideLoading();
   S.phase = 'exited';
   S.runtimeExited = true;
-  stopMenuPoll();
+  setMenuOpen(false);
   if (S.ime) S.ime.setActive(false);
   setView('servers');
   renderServers();
@@ -1987,22 +1982,17 @@ function startMenuPoll() {
   if (S.menuTimer) return;
   S.menuTimer = setInterval(() => {
     if (S.view !== 'game') return;
-    const Module = S.runtime && S.runtime.Module;
-    if (!Module || typeof Module.ccall !== 'function') return;
-    try {
-      const isDesktop = S.device && S.device.kind === 'desktop';
-      setMenuOpen(isDesktop && Module.ccall('DDWeb_IsMenuOpen', 'number', [], []) === 1);
-    } catch (error) {
-      // 旧 wasm 没有导出
+    const isDesktop = S.device && S.device.kind === 'desktop';
+    if (!isDesktop) {
+      setMenuOpen(false);
+      return;
     }
+    const Module = S.runtime && S.runtime.Module;
+    let open;
+    if (Module && typeof Module.DDWebMenuOpen === 'boolean') open = Module.DDWebMenuOpen;
+    else open = document.pointerLockElement !== R.canvas;
+    setMenuOpen(open);
   }, 500);
-}
-
-function setMenuOpen(open) {
-  const value = open === true;
-  if (S.menuOpen === value) return;
-  S.menuOpen = value;
-  document.body.classList.toggle('is-menu-open', value);
 }
 
 function stopMenuPoll() {
@@ -2010,18 +2000,27 @@ function stopMenuPoll() {
     clearInterval(S.menuTimer);
     S.menuTimer = null;
   }
-  S.menuOpen = false;
-  document.body.classList.remove('is-menu-open');
+  setMenuOpen(false);
+}
+
+function setMenuOpen(open) {
+  const value = open === true;
+  if (S.menuOpen === value) return;
+  S.menuOpen = value;
+  if (!value) setUiMouseTarget(null);
+  document.body.classList.toggle('is-menu-open', value);
 }
 
 function setWasmAbsoluteMouse(absolute) {
   const Module = S.runtime && S.runtime.Module;
-  if (!Module || typeof Module.ccall !== 'function') return;
-  try {
-    Module.ccall('DDWeb_SetAbsoluteMouse', null, ['number'], [absolute ? 1 : 0]);
-  } catch (error) {
-    // 旧 wasm 没有这个导出时忽略
-  }
+  if (!Module) return;
+  Module.DDWebAbsoluteMouse = absolute === true;
+}
+
+function setUiMouseTarget(target) {
+  const Module = S.runtime && S.runtime.Module;
+  if (!Module) return;
+  Module.DDWebUiMouseTarget = target ? [target[0], target[1]] : null;
 }
 
 function scheduleUiMouseSync() {
@@ -2036,11 +2035,7 @@ function scheduleUiMouseSync() {
     if (!rect.width || !rect.height) return;
     const x = Math.min(1, Math.max(0, (S.mouse.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (S.mouse.clientY - rect.top) / rect.height));
-    try {
-      Module.ccall('DDWeb_SetUiMousePos', null, ['number', 'number'], [x, y]);
-    } catch (error) {
-      // 忽略：旧 wasm 没有这个导出
-    }
+    setUiMouseTarget([x, y]);
   };
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
   else setTimeout(run, 16);
@@ -2061,6 +2056,7 @@ function setView(name) {
   R.canvas.style.display = inGame ? 'block' : 'none';
   if (inGame) {
     startMenuPoll();
+    setMenuOpen(document.pointerLockElement !== R.canvas);
     setWasmAbsoluteMouse(document.pointerLockElement !== R.canvas);
     try {
       R.canvas.focus();
