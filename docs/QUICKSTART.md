@@ -5,7 +5,7 @@
 所有常驻服务、测试、wasm 构建都走 `docker compose`（不再手写 `docker run`）：
 
 ```bash
-cd /root/test
+cd /root/test/ddnet-web
 
 # 开发/演示栈（项目名 ddnet-web-dev，端口 8390/8391/8392/8443；不启动本地游戏服务器）
 docker compose -f compose.dev.yml up -d --build   # 或 ./scripts/dev-up.sh（会等健康检查并打印状态）
@@ -36,7 +36,7 @@ RELAY_DOMAIN=play.example.com RELAY_PUBLIC_URL=wss://play.example.com MASTER_DOM
 ## 一、启动
 
 ```bash
-cd /root/test && ./scripts/dev-up.sh     # = docker compose -f compose.dev.yml up -d --build + 等健康检查
+cd /root/test/ddnet-web && ./scripts/dev-up.sh     # = docker compose -f compose.dev.yml up -d --build + 等健康检查
 ./scripts/dev-down.sh                    # = docker compose -f compose.dev.yml down
 ```
 

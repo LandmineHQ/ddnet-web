@@ -6,7 +6,8 @@
 #   -> dist/web/  (含 manifest.json)
 set -euo pipefail
 
-ROOT="${ROOT:-/root/test}"
+DEFAULT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${ROOT:-$DEFAULT_ROOT}"
 DIST="${DIST:-$ROOT/dist/web}"
 WEB="${WEB:-$ROOT/web}"
 

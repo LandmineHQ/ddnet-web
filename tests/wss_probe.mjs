@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-const require = createRequire("/root/test/relay/");
+const require = createRequire(new URL("../relay/", import.meta.url));
 const WebSocket = require("ws");
 const url = process.argv[2] || "wss://192.168.31.31:8444/udp/127.0.0.1:8313";
 const ws = new WebSocket(url, { rejectUnauthorized: false });

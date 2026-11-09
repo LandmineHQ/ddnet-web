@@ -115,10 +115,10 @@ services:
     restart: unless-stopped
     # host 网络：0.0.0.0:8392，本机 http://localhost:8392 即安全上下文
     network_mode: host
-    working_dir: /root/test
+    working_dir: /repo
     command: ["node", "web/serve.mjs", "--port", "8392", "--host", "0.0.0.0", "--root", "dist/web", "--master", "127.0.0.1:8391"]
     volumes:
-      - ./:/root/test:ro
+      - ./:/repo:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8392/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -132,7 +132,7 @@ services:
     restart: unless-stopped
     # host 网络：https + 同端口 wss 反代都在 8443
     network_mode: host
-    working_dir: /root/test
+    working_dir: /repo
     command:
       - node
       - scripts/dev-https.mjs
@@ -146,7 +146,7 @@ services:
       - 127.0.0.1:8391
     volumes:
       # 静态站点、自签证书（tests/tls）、relay/node_modules/ws 都在仓库里，只读挂载
-      - ./:/root/test:ro
+      - ./:/repo:ro
     depends_on:
       relay:
         condition: service_healthy

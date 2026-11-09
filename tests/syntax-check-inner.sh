@@ -10,6 +10,7 @@ FAILED=0
 # path to the compose mount point (usually /w) so includes resolve inside docker.
 LIBS="$(readlink -f "${SRC}/ddnet-libs" 2>/dev/null || true)"
 case "${LIBS}" in
+	/root/test/ddnet-web/*) LIBS="${ROOT}/${LIBS#/root/test/ddnet-web/}" ;;
 	/root/test/*) LIBS="${ROOT}/${LIBS#/root/test/}" ;;
 esac
 if [ ! -d "${LIBS}/sdl/include/webasm" ] && [ -d "${ROOT}/ddnet/ddnet-libs/sdl/include/webasm" ]; then

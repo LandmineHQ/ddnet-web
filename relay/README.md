@@ -82,7 +82,7 @@ http://127.0.0.1:8390/api/info
 POST http://127.0.0.1:8390/rtc/offer
 ```
 
-当前 8390 由 Docker host-network 容器 **`ddnet-relay-dev`** 运行（挂载 `/root/test/relay`，
+当前 8390 由 Docker host-network 容器 **`ddnet-relay-dev`** 运行（挂载 `/root/test/ddnet-web/relay`，
 使用 `node:24-bookworm-slim`），这样 WebRTC host candidate 使用宿主网卡，浏览器可直达。
 复现/重启：
 
@@ -90,21 +90,21 @@ POST http://127.0.0.1:8390/rtc/offer
 # 当前运行方式（host network；改代码后需 remove + run 重启）
 docker rm -f ddnet-relay-dev
 docker run -d --name ddnet-relay-dev --restart unless-stopped --network host \
-  -v /root/test/relay:/app:ro -w /app node:24-bookworm-slim \
+  -v /root/test/ddnet-web/relay:/app:ro -w /app node:24-bookworm-slim \
   node bin/relay.mjs --config relay.dev-lan.json
 
 # 或者不用 Docker（仅本机 UDP 中继调试；WebRTC 也走本机回环，见备注）
-cd /root/test/relay && npm start -- --config relay.dev-lan.json
+cd /root/test/ddnet-web/relay && npm start -- --config relay.dev-lan.json
 ```
 
 ```bash
 # 真实 DDNet 服务器（官方 20.2.1 二进制跑在 Docker，UDP 8313 -> 宿主）
-cd /root/test/relay
+cd /root/test/ddnet-web/relay
 bash test/start-ddnet-server.sh
 # 首次会下载官方包到 relay/.cache/（已缓存时秒起）；容器名 ddnet-e2e
 
 # 协议级端到端 + WebRTC 验证
-cd /root/test/relay
+cd /root/test/ddnet-web/relay
 npm run test:e2e
 npm run test:rtc -- --relay http://127.0.0.1:8390 --concurrency 16
 ```
@@ -580,7 +580,7 @@ PASS
 启动官方 DDNet 20.2.1 服务器（UDP 8313 映射到宿主）：
 
 ```bash
-cd /root/test/relay
+cd /root/test/ddnet-web/relay
 bash test/start-ddnet-server.sh                 # 终端 B：首次下载官方包到 relay/.cache/，之后直接复用
 npm start -- --config relay.config.json         # 终端 A：中继 127.0.0.1:8390
 npm run test:e2e                                # 终端 C：ws -> relay -> UDP -> 真实服务器

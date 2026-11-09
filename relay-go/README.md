@@ -51,7 +51,7 @@ unchanged. One binary, no native modules, no npm dependencies.
 The whole project starts every service through compose:
 
 ```bash
-cd /root/test
+cd /root/test/ddnet-web
 
 # dev stack: relay (:8390) + web (:8392, https+wss :8443);
 # /api/servers points at DDNet official Tutorial (no local game server)

@@ -4,7 +4,7 @@
 > 通过 WebSocket(wss) 连接到我们自己实现的中继后端，由中继把数据报转发给任意 DDNet 服务器（UDP）。
 > 前端网站可添加/自定义多个中继后端。
 
-仓库：https://github.com/ddnet/ddnet.git（已 clone 到 `/root/test/ddnet`，当前 HEAD `a02cf38`）
+仓库：https://github.com/ddnet/ddnet.git（已 clone 到 `/root/test/ddnet-web/ddnet`，当前 HEAD `a02cf38`）
 
 ---
 
@@ -318,7 +318,7 @@ EM_JS(void, dd_ws_close, (int slot), { ... });
 ## 9. 目录结构（本项目）
 
 ```
-/root/test/
+/root/test/ddnet-web/
 ├── ddnet/                  # 上游源码（唯一写者：Lead），含我们的补丁
 ├── build/                  # 构建脚本、Dockerfile、CMake 缓存（不入库构建产物）
 ├── relay/                  # 中继后端（Node.js + ws + dgram）+ 测试

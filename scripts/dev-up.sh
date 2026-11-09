@@ -34,7 +34,7 @@ if [ ! -s "$ROOT/tests/tls/cert.pem" ] || [ ! -s "$ROOT/tests/tls/key.pem" ]; th
 	mkdir -p "$ROOT/tests/tls"
 	openssl req -x509 -newkey rsa:2048 -nodes -keyout "$ROOT/tests/tls/key.pem" \
 		-out "$ROOT/tests/tls/cert.pem" -days 365 -subj '/CN=localhost' \
-		-addext "subjectAltName=DNS:localhost,IP:127.0.0.1,$(hostname -I | awk '{print $1}')" >/dev/null 2>&1
+		-addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:$(hostname -I | awk '{print $1}')" >/dev/null 2>&1
 	echo "   已生成自签证书 tests/tls/"
 fi
 

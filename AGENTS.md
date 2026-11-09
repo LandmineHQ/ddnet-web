@@ -104,20 +104,20 @@
 ## 4. 构建 wasm 客户端
 
     export DOCKER_CONFIG=/root/test/.docker HOME=/root/test/.home   # 沙箱里 /root 只读，必须设置
-    cd /root/test/build
+    cd /root/test/ddnet-web/build
     DRY_RUN=1 ./build-wasm.sh           # 秒级自检
     BUILD_TYPE=Release ./build-wasm.sh  # 约 1.5 分钟，wasm 8.5MB，推荐
     # 也可以用 compose（一次性服务）：
     docker compose -f build/compose.yml run --rm -T wasm-build
 
-- 源码默认 `/root/test/ddnet-dev`；构建目录 `build/wasm-build`（Debug）、`build/wasm-build-release`（Release）
+- 源码默认 `/root/test/ddnet-web/ddnet-dev`；构建目录 `build/wasm-build`（Debug）、`build/wasm-build-release`（Release）
 - 后端 Go 构建用 `golang:1.24-alpine`（pion/webrtc 要求 go>=1.24）；依赖在 `relay-go/vendor`，镜像构建不联网
 - 工具链镜像：`ddnet-wasm-builder:emsdk-4.0.22`（官方 emsdk 4.0.22 + rust 1.89 + ninja）
-- 备用宿主 emsdk：`/root/test/build/emsdk-official`
+- 备用宿主 emsdk：`/root/test/ddnet-web/build/emsdk-official`
 
 **组装站点（改前端或重建 wasm 后必须执行）**：
 
-    cd /root/test && scripts/assemble-web.sh
+    cd /root/test/ddnet-web && scripts/assemble-web.sh
 
 生成 index.html/app.js/style.css/src/assets + manifest.json(sha256) + _headers。
 **坑**：wasm 重建后若忘记 assemble，manifest 里旧的 sha256 与文件不匹配，前端会报
@@ -237,7 +237,7 @@ CMake 报 "You must install libpng/Freetype/Ogg/Opus/..."。正确规则：`/*/w
 ### 7.8 worktree 里 ddnet-libs 软链容易建错
 目标目录已存在时 `ln -sfn target ddnet-dev/ddnet-libs` 会建出嵌套的
 `ddnet-dev/ddnet-libs/ddnet-libs`，容器内解析失败。先 rmdir 再 ln -s，并用 `readlink -f` 验证。
-（`tests/syntax-check-inner.sh` 里对绝对软链做了 `/root/test` → `/w` 的路径翻译。）
+（`tests/syntax-check-inner.sh` 里对绝对软链做了 `/root/test/ddnet-web` → `/w` 的路径翻译。）
 
 ### 7.9 沙箱只写 /root/test
 - `docker build` 因 buildx 写 /root/.docker 失败 → `export DOCKER_CONFIG=/root/test/.docker`

@@ -1,7 +1,7 @@
 // 移动端（Android / 手机）触屏 UI 截图：零依赖 CDP + 假构建资源 + 假中继。
 // 在 ddchrome 容器内运行（容器内自带 chromium 与 node）：
 //   docker run --rm --name web-mobile-shot --network host --shm-size=1g \
-//     -v /root/test:/root/test -w /root/test \
+//     -v /root/test/ddnet-web:/root/test/ddnet-web -w /root/test/ddnet-web \
 //     -v /usr/share/fonts/opentype/noto:/usr/share/fonts/opentype/noto:ro \
 //     ddchrome:latest env CHROME=/usr/bin/chromium \
 //     node web/tools/mobile-shot.mjs --port 8394 --cdp-port 9334

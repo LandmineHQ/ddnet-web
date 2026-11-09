@@ -223,13 +223,13 @@
 
     # 移动端触屏 UI 截图（假构建资源 + 假中继，只监听 127.0.0.1 高位端口）：
     docker run --rm --name web-mobile-shot --network host --shm-size=1g \
-      -v /root/test:/root/test -w /root/test \
+      -v /root/test/ddnet-web:/root/test/ddnet-web -w /root/test/ddnet-web \
       -v /usr/share/fonts/opentype/noto:/usr/share/fonts/opentype/noto:ro \
       ddchrome:latest env CHROME=/usr/bin/chromium \
       node web/tools/mobile-shot.mjs --port 8394 --cdp-port 9334
 
     # Chromium 全流程 E2E（容器内自带 chromium + node，--network host 访问本机站点）：
-    docker run --rm --network host --shm-size=1g -v /root/test:/root/test -w /root/test \
+    docker run --rm --network host --shm-size=1g -v /root/test/ddnet-web:/root/test/ddnet-web -w /root/test/ddnet-web \
       ddchrome:latest node web/tools/e2e-browser.mjs --base http://127.0.0.1:8393/
 
 最近一次真实浏览器结果（本次快捷键/移动端改动前）：**35/35 通过**（亮色主题、后端新增/编辑/删除、内置后端删除+隐藏+恢复默认、

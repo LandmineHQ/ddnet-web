@@ -2,10 +2,13 @@
 // (in production this job is done by Caddy / nginx, see docker-compose.yml)
 import https from "node:https";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 
-const cert = fs.readFileSync("/root/test/tests/tls/cert.pem");
-const key = fs.readFileSync("/root/test/tests/tls/key.pem");
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const cert = fs.readFileSync(path.join(HERE, "../tls/cert.pem"));
+const key = fs.readFileSync(path.join(HERE, "../tls/key.pem"));
 const server = https.createServer({ cert, key });
 const wss = new WebSocketServer({ server });
 

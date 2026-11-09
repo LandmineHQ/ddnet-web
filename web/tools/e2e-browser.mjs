@@ -1,6 +1,6 @@
 // 零依赖 Chromium E2E（CDP）：五屏流程 + WebRTC 延迟 + 缓存持久化 + 聚光灯 / Ctrl+`
 // 在 ddchrome 容器内运行（容器内自带 chromium 与 node）：
-//   docker run --rm --network host -v /root/test:/root/test -w /root/test ddchrome:latest \
+//   docker run --rm --network host -v /root/test/ddnet-web:/root/test/ddnet-web -w /root/test/ddnet-web ddchrome:latest \
 //     node web/tools/e2e-browser.mjs --base http://127.0.0.1:8393/
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';

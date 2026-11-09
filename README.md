@@ -10,7 +10,7 @@
 [![nginx](https://img.shields.io/badge/nginx-TLS%20%2F%20WSS-009639.svg?style=flat-square&logo=nginx&logoColor=white)](https://nginx.org/)
 [![Tests](https://img.shields.io/badge/tests-79%20Go%20%7C%2082%20Node%20%7C%2089%20E2E-2ea44f.svg?style=flat-square)](#-development--verification)
 
-*在浏览器里玩 DDNet 0.6/0.7；游戏流量优先走 WebRTC DataChannel，失败自动回退 WebSocket；relay master 负责节点注册、首次 WS 验证和 15 分钟存活检查。*
+*仓库名：`ddnet-web`。在浏览器里玩 DDNet 0.6/0.7；游戏流量优先走 WebRTC DataChannel，失败自动回退 WebSocket；relay master 负责节点注册、首次 WS 验证和 15 分钟存活检查。*
 
 **文档：** [快速开始](docs/QUICKSTART.md) · [架构与约定](AGENTS.md) · [生产 nginx](deploy/README.md) · [前端说明](web/README.md) · [Go relay](relay-go/README.md)
 
@@ -96,7 +96,7 @@
 ### Option A — 一键开发栈（推荐先跑起来）
 
 ```bash
-cd /root/test
+cd /root/test/ddnet-web
 ./scripts/dev-up.sh
 ```
 
