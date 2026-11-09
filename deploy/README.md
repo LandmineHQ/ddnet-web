@@ -17,7 +17,7 @@ MASTER_DOMAIN=master.landmine.top \
 RELAY_ORIGINS=https://play.example.com \
 RELAY_TOKENS='<relay-token>' \
 RTC_PUBLIC_IP=<公网IP> \
-docker compose -f compose.yml up -d --build
+docker compose -f compose.yml pull && docker compose -f compose.yml up -d
 ```
 
 - `RELAY_ORIGINS` 必须包含站点 Origin；nginx 会透传浏览器 `Origin`

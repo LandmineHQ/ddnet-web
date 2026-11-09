@@ -26,7 +26,7 @@ BUILD_TYPE=Release docker compose -f build/compose.yml run --rm wasm-build
 
 # 生产部署（Go 中继 + relay master，TLS/WSS 由 nginx 终止）
 RELAY_DOMAIN=play.example.com RELAY_PUBLIC_URL=wss://play.example.com MASTER_DOMAIN=master.landmine.top \
-  docker compose -f compose.yml up -d --build
+  docker compose -f compose.yml pull && docker compose -f compose.yml up -d
 # TLS/WSS/静态站点由生产 nginx 负责，见 deploy/nginx.conf
 ```
 

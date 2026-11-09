@@ -57,7 +57,7 @@
 | `web/` | 前端站点（原生 ESM 零依赖）+ Node 测试 + 移动端截图工具 | 前端任务 |
 | `compose.dev.yml` | 开发栈：Go 后端 8390 + relay master 8391 + 站点 8392 + https+wss 8443；**不启动本地游戏服务器**，/api/servers 指向 DDNet 官方 Tutorial | 运维任务 |
 | `compose.test.yml` | 测试栈（profiles）：`relay-unit` / `e2e-relay` / `e2e-web` / `syntax-check` / `slow:e2e-reconnect` / `fallback:e2e-rtc-fallback` / `local-server`（可选本地测试服） | 运维任务 |
-| `compose.yml` | 生产：Go relay + relay master（只绑 127.0.0.1:8390/8391；无 Caddy；TLS/WSS 由生产 nginx 终止，静态站点由 nginx root 到 `dist/web`） | 运维任务 |
+| `compose.yml` | 生产：Go relay + relay master（**直接拉取 GHCR latest 镜像**；只绑 127.0.0.1:8390/8391；无 Caddy；TLS/WSS 由生产 nginx 终止，静态站点由 nginx root 到 `dist/web`） | 运维任务 |
 | `deploy/` | 生产 nginx 配置示例：TLS/WSS、静态站点、`/relay-master/*` 反代 | 运维任务 |
 | `.github/workflows/` | build（web/二进制/alpine 镜像）、pages（自动）、publish-ghcr/release（手动） | 运维任务 |
 | `build/compose.yml` | wasm 构建（emsdk 镜像，一次性服务） | 均可 |
@@ -143,7 +143,7 @@
 - relay master：`/relay-master/v1/serverlist`（同源相对路径，网页自动获取；直连调试 http://127.0.0.1:8391/v1/serverlist）
 - 一键直达：`https://<ip>:8443/?connect=wss%3A%2F%2F<ip>%3A8443%2Fudp%2F74.91.126.203%3A8300&autostart=1`（官方 USA1 Tutorial）
 
-生产：`RELAY_DOMAIN=... MASTER_DOMAIN=... RELAY_PUBLIC_URL=... docker compose -f compose.yml up -d --build`（`deploy/nginx.conf` 负责 TLS/WSS/静态站点）。
+生产：`RELAY_DOMAIN=... MASTER_DOMAIN=... RELAY_PUBLIC_URL=... docker compose -f compose.yml pull && docker compose -f compose.yml up -d`（镜像来自 GHCR latest；`deploy/nginx.conf` 负责 TLS/WSS/静态站点）。
 
 > 注意：用户要求清理时 compose 栈会被 `dev-down.sh` 停掉，端口 8390/8391/8392/8443 随之释放。
 > 游戏服务器是 DDNet 官方 Tutorial，不在本机运行；中继需能出站 UDP 到对应官方 IP。

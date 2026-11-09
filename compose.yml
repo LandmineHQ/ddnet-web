@@ -2,7 +2,7 @@
 #
 #   RELAY_DOMAIN=relay.example.com MASTER_DOMAIN=master.landmine.top \
 #   RELAY_PUBLIC_URL=wss://relay.example.com \
-#     docker compose up -d --build
+#     docker compose pull && docker compose up -d
 #
 # TLS / HTTPS / WSS 由生产环境的 nginx 终止，本 compose 不包含 Caddy：
 #   - relay         127.0.0.1:8390  HTTP + WS + /rtc/offer + /healthz + /api/*
@@ -13,19 +13,18 @@
 # nginx 示例见 deploy/nginx.conf。前置：dist/web 已有构建产物
 # （build/build-wasm.sh + scripts/assemble-web.sh）。
 #
-# 本地验证生产镜像（不需要真实域名）：
-#   docker compose build
+# 镜像来自 GHCR（latest，可用 RELAY_IMAGE_TAG 固定版本）；不需要本地构建。
+# 本地验证配置：
 #   docker compose config
+#   docker compose pull
 #
 # 开发环境请用 compose.dev.yml；测试请用 compose.test.yml。
 name: ddnet-web-prod
 
 services:
   relay-master:
-    build:
-      context: ./relay-go
-      dockerfile: Dockerfile.master
-    image: ddnet-relay-master:prod
+    image: ghcr.io/landminehq/ddnet-web-master:${RELAY_IMAGE_TAG:-latest}
+    pull_policy: always
     restart: unless-stopped
     environment:
       MASTER_HOST: 0.0.0.0
@@ -47,10 +46,8 @@ services:
       start_period: 10s
 
   relay:
-    build:
-      context: ./relay-go
-      dockerfile: Dockerfile
-    image: ddnet-relay-go:prod
+    image: ghcr.io/landminehq/ddnet-web-relay:${RELAY_IMAGE_TAG:-latest}
+    pull_policy: always
     restart: unless-stopped
     environment:
       RELAY_HOST: 0.0.0.0

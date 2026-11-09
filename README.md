@@ -133,7 +133,14 @@ RELAY_PUBLIC_URL=wss://play.example.com \
 MASTER_DOMAIN=master.landmine.top \
 RELAY_ORIGINS=https://play.example.com \
 RTC_PUBLIC_IP=<公网IP> \
-docker compose -f compose.yml up -d --build
+docker compose -f compose.yml pull && docker compose -f compose.yml up -d
+```
+
+生产使用 GHCR 镜像（默认 `latest`，可用 `RELAY_IMAGE_TAG` 固定版本）：
+
+```text
+ghcr.io/landminehq/ddnet-web-relay:latest
+ghcr.io/landminehq/ddnet-web-master:latest
 ```
 
 然后把 [deploy/nginx.conf](deploy/nginx.conf) 安装到生产 nginx，按实际域名、证书和 `dist/web` 路径修改：
@@ -177,7 +184,7 @@ scripts/assemble-web.sh                # 组装前端 + manifest.json（改前�
   curl http://127.0.0.1:8391/v1/serverlist
   ```
 
-- **生产**：`docker compose -f compose.yml up -d --build` 后访问 nginx 站点；
+- **生产**：`docker compose -f compose.yml pull && docker compose -f compose.yml up -d` 后访问 nginx 站点；
   健康检查：
 
   ```bash
