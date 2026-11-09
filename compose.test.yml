@@ -105,7 +105,8 @@ services:
     ports:
       - "8313:8303/udp"
 
-  # WebRTC 回退回归：起一个关闭 RTC 的 Go 后端（8397），客户端应自动回退 WS。
+  # WebRTC 回退回归：起一个关闭 RTC 的 Go 后端（专用 8397，避开 dev 默认 8390），
+  # 客户端应自动回退 WS。默认 e2e-relay/e2e-web 仍使用 dev 的 8390/8391。
   relay-no-rtc:
     image: ${RELAY_IMAGE:-ddnet-relay-go:dev}
     profiles: ["fallback"]

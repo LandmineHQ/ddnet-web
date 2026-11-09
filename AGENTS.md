@@ -57,7 +57,7 @@
 | `web/` | 前端站点（原生 ESM 零依赖）+ Node 测试 + 移动端截图工具 | 前端任务 |
 | `compose.dev.yml` | 开发栈：Go 后端 8390 + relay master 8391 + 站点 8392 + https+wss 8443；**不启动本地游戏服务器**，/api/servers 指向 DDNet 官方 Tutorial | 运维任务 |
 | `compose.test.yml` | 测试栈（profiles）：`relay-unit` / `e2e-relay` / `e2e-web` / `syntax-check` / `slow:e2e-reconnect` / `fallback:e2e-rtc-fallback` / `local-server`（可选本地测试服） | 运维任务 |
-| `compose.yml` | 生产：Go relay + relay master（只绑 127.0.0.1:8080/8081；无 Caddy；TLS/WSS 由生产 nginx 终止，静态站点由 nginx root 到 `dist/web`） | 运维任务 |
+| `compose.yml` | 生产：Go relay + relay master（只绑 127.0.0.1:8390/8391；无 Caddy；TLS/WSS 由生产 nginx 终止，静态站点由 nginx root 到 `dist/web`） | 运维任务 |
 | `deploy/` | 生产 nginx 配置示例：TLS/WSS、静态站点、`/relay-master/*` 反代 | 运维任务 |
 | `build/compose.yml` | wasm 构建（emsdk 镜像，一次性服务） | 均可 |
 | `build/` | Docker 构建流水线 + 构建文档 | 构建任务 |
@@ -360,7 +360,7 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
 
 ### 7.24 relay master（节点注册中心）
 - 新服务 `cmd/master`（镜像 `Dockerfile.master`），默认域名 `master.landmine.top`，开发栈监听
-  `0.0.0.0:8391`；生产由 nginx 的 `master.landmine.top` 反代到宿主 `127.0.0.1:8081`。
+  `0.0.0.0:8391`；生产由 nginx 的 `master.landmine.top` 反代到宿主 `127.0.0.1:8391`。
 - API：
   - `POST /v1/register`：`{name,url,region,version,players,transports,webrtc}`，`url` 必须是
     `ws://`/`wss://` base；`webrtc:{enabled,host,signalUrl,udpPort}` 声明媒体主机/IP、信令地址和固定 ICE UDP 端口。
@@ -388,11 +388,11 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
 
 ### 7.25 生产 nginx / 无 Caddy
 - Go relay **不实现 TLS**：只监听明文 HTTP/WS；生产 compose 不再包含 Caddy，只把
-  `relay` / `relay-master` 绑到 `127.0.0.1:8080/8081`，由 nginx 做 TLS、WSS、HTTP/2、静态站点和限流。
+  `relay` / `relay-master` 绑到 `127.0.0.1:8390/8391`，由 nginx 做 TLS、WSS、HTTP/2、静态站点和限流。
 - 生产入口：`deploy/nginx.conf`
   - `play.example.com`：root `dist/web`，加 COOP/COEP，代理 `/udp/`、`/ws`、`/healthz`、`/api/`、`/rtc/`
-    到 `127.0.0.1:8080`，`/relay-master/` 到 `127.0.0.1:8081`；
-  - `master.landmine.top`：反代 `127.0.0.1:8081`；
+    到 `127.0.0.1:8390`，`/relay-master/` 到 `127.0.0.1:8391`；
+  - `master.landmine.top`：反代 `127.0.0.1:8391`；
   - TCP 443 由 nginx 占用，**UDP 443** 由 relay 占用（同号不同协议）；WebRTC 使用共享固定 `udpPort`。
 - 自签证书只适合内网测试：浏览器仍会校验证书；同源页面与 wss 同主机/端口且用户已接受例外时通常可复用，
   跨域名/端口需要单独信任。正式环境直接使用 nginx + 公网证书。
@@ -425,7 +425,7 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
 6. 生产 TLS/WSS 由 nginx 负责，Go relay 只实现 HTTP/WS；不要重新引入 Caddy 或应用内 TLS。
 7. 长期服务用 Docker compose，不要依赖会话里的后台进程；**不要再多加 `docker run` 式服务启动**。
 8. 端口约定：开发/测试后端 8390、relay master 8391、站点 http 8392、站点 https(+wss) 8443；
-   生产 nginx 使用 80/443，relay 使用 UDP 443，生产 compose 只绑定 127.0.0.1:8080/8081。
+   生产 nginx 使用 80/443，relay 使用 UDP 443，生产 compose 只绑定 127.0.0.1:8390/8391。
    本沙箱开发环境**不要占用 80/443/3080**（生产部署在外网主机自行放行）。
 9. 汇报时给出可复现命令 + 实测输出，不要只说"应该可以"。
 10. 前端资源清单：新增 `web/src/*.js` 会被 `assemble-web.sh` 整目录复制，无需改脚本；新增顶层文件要加进脚本列表。

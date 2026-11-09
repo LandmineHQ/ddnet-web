@@ -2,8 +2,8 @@
 
 本仓库的生产 compose **不包含 Caddy**，也不在应用里做 TLS 终止：
 
-- relay 只监听 `127.0.0.1:8080` 的 HTTP/WS
-- relay master 只监听 `127.0.0.1:8081` 的 HTTP
+- relay 只监听 `127.0.0.1:8390` 的 HTTP/WS（与 dev 默认端口一致）
+- relay master 只监听 `127.0.0.1:8391` 的 HTTP（与 dev 默认端口一致）
 - WebRTC ICE 固定 `443/udp`（与 nginx 的 TCP 443 同号不同协议）
 - 静态站点由 nginx 直接 root 到 `dist/web`
 - HTTPS/WSS 证书、HTTP/2、限流/WAF 全部由生产 nginx 负责
@@ -38,7 +38,7 @@ sudo nginx -t && sudo systemctl reload nginx
 - `play.example.com` / `master.landmine.top`
 - Let's Encrypt 证书路径
 - `root /srv/ddnet-web;` 指向 `dist/web`
-- nginx 与 Docker 的 `127.0.0.1:8080/8081` 在同一台机器；如果是远程 nginx，把 compose 的 `127.0.0.1:` 绑定改成内网地址或走私网
+- nginx 与 Docker 的 `127.0.0.1:8390/8391` 在同一台机器；如果是远程 nginx，把 compose 的 `127.0.0.1:` 绑定改成内网地址或走私网
 
 ## 3. 验证
 

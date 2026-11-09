@@ -144,11 +144,13 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-生产端口：
+生产端口（与 dev 默认一致）：
 
 ```text
-TCP 443  nginx：站点 + WSS + /relay-master
-UDP 443  relay：WebRTC ICE（与 nginx TCP 443 同号）
+127.0.0.1:8390  relay：HTTP / WS / API（仅本机，供 nginx 反代）
+127.0.0.1:8391  relay master：HTTP API（仅本机，供 nginx 反代）
+TCP 443         nginx：站点 + WSS + /relay-master
+UDP 443         relay：WebRTC ICE（与 nginx TCP 443 同号）
 ```
 
 防火墙放行 **TCP 443 + UDP 443**。如果 relay 在 NAT 后，设置 `RTC_PUBLIC_IP`；需要跨 NAT 时配置 `RTC_ICE_SERVERS`（STUN/TURN）。
@@ -344,7 +346,7 @@ flowchart LR
 
 ## 🛡️ Security & Reliability
 
-- **TLS 只在 nginx**：Go relay 不实现 TLS；生产 compose 只绑定 `127.0.0.1:8080/8081`，避免绕过 nginx。
+- **TLS 只在 nginx**：Go relay 不实现 TLS；生产 compose 只绑定 `127.0.0.1:8390/8391`，避免绕过 nginx。
 - **relay 鉴权**：`RELAY_TOKENS` + `RELAY_ORIGINS`；生产默认 `RELAY_ALLOW_NO_ORIGIN=false`。
 - **SSRF 防护**：默认禁止私网/回环目标；通过 `ALLOW_PRIVATE` / `RELAY_ALLOWLIST` 显式放行。
 - **限流**：每 IP 连接数、总连接数、帧大小、包/字节速率、RTC offer 限流。
