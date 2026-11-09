@@ -452,7 +452,6 @@ Release 资产：
 relay-linux-amd64
 relay-master-linux-amd64
 ddnet-web-dist.tar.gz
-SHA256SUMS
 ```
 
 获取 build run id：

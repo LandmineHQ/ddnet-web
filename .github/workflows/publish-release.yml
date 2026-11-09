@@ -81,7 +81,6 @@ jobs:
           cp assets/bin/relay-master-linux-amd64 assets/out/relay-master-linux-amd64
           chmod +x assets/out/relay-linux-amd64 assets/out/relay-master-linux-amd64
           tar -C assets/web-dist -czf assets/out/ddnet-web-dist.tar.gz .
-          (cd assets/out && sha256sum relay-linux-amd64 relay-master-linux-amd64 ddnet-web-dist.tar.gz > SHA256SUMS)
           ls -lh assets/out
 
       - name: Get build run commit
@@ -120,7 +119,6 @@ jobs:
           | relay (linux/amd64) | [relay-linux-amd64](${BASE}/relay-linux-amd64) |
           | relay-master (linux/amd64) | [relay-master-linux-amd64](${BASE}/relay-master-linux-amd64) |
           | web static bundle | [ddnet-web-dist.tar.gz](${BASE}/ddnet-web-dist.tar.gz) |
-          | checksums | [SHA256SUMS](${BASE}/SHA256SUMS) |
 
           ## Notes
 
