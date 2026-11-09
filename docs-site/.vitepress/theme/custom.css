@@ -18,10 +18,12 @@
 
   --vp-code-bg: #eef2f7;
   --vp-code-color: #8a3c00;
-  --vp-code-block-bg: #0b0f16;
-  --vp-code-block-color: #e7edf7;
-  --vp-code-line-highlight-color: rgba(255, 165, 0, 0.12);
-  --vp-code-copy-code-bg: rgba(11, 15, 22, 0.9);
+  /* 亮色主题使用浅色代码块；Shiki 的亮色 token 是深色文字。 */
+  --vp-code-block-bg: #f6f8fb;
+  --vp-code-block-color: #1f2937;
+  --vp-code-line-highlight-color: rgba(255, 165, 0, 0.18);
+  --vp-code-copy-code-bg: rgba(255, 255, 255, 0.92);
+  --vp-code-copy-code-hover-bg: rgba(255, 255, 255, 1);
 
   --vp-button-brand-bg: #ffa500;
   --vp-button-brand-hover-bg: #ff7a18;
@@ -99,4 +101,37 @@
 
 .VPNavBar .container {
   backdrop-filter: blur(14px);
+}
+
+/* 亮色主题代码块边框，避免和页面背景混在一起 */
+:root:not(.dark) .vp-doc div[class*='language-'] {
+  border: 1px solid var(--vp-c-divider);
+}
+
+:root:not(.dark) .vp-doc div[class*='language-'] code {
+  color: var(--vp-code-block-color);
+}
+
+/* 自定义「返回客户端」导航项（slot 中不是 scoped VPNavBarMenuLink 组件） */
+.VPNavBar .back-to-client {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  line-height: var(--vp-nav-height);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-text-1);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.VPNavBar .back-to-client:hover {
+  color: var(--vp-c-brand-1);
+}
+
+@media (max-width: 768px) {
+  .VPNavBar .back-to-client {
+    padding: 0 8px;
+    font-size: 13px;
+  }
 }

@@ -20,7 +20,6 @@ export default defineConfig({
     nav: [
       { text: '指南', link: '/guide/relay-node' },
       { text: 'API', link: '/api/relay' },
-      { text: '返回客户端', link: '/../' },
     ],
     sidebar: {
       '/guide/': [
