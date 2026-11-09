@@ -144,7 +144,7 @@
 访问：
 - 本机：http://localhost:8392/
 - 局域网：https://<host-ip>:8443/（自签证书 → 点"继续前往"，中继会自动出现「同源中继」）
-- relay master：`/relay-master/v1/serverlist`（同源相对路径，网页自动获取；直连调试 http://127.0.0.1:8391/v1/serverlist）
+- relay master：默认 `https://master.landmine.top/v1/serverlist`；本机开发用 `http://127.0.0.1:8391/v1/serverlist`，LAN HTTPS 开发用同源 `/relay-master/v1/serverlist`
 - 一键直达：`https://<ip>:8443/?connect=wss%3A%2F%2F<ip>%3A8443%2Fudp%2F74.91.126.203%3A8300&autostart=1`（官方 USA1 Tutorial）
 
 生产：`RELAY_DOMAIN=... MASTER_DOMAIN=... RELAY_PUBLIC_URL=... docker compose -f compose.yml pull && docker compose -f compose.yml up -d`（镜像来自 GHCR latest；`deploy/nginx.conf` 负责 TLS/WSS/静态站点）。
@@ -380,7 +380,7 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
   - `POST /v1/unregister`：`{url}`，relay 优雅退出时尽力调用。
   - `GET /v1/serverlist`：只返回已验证 + healthy 节点；带 CORS（默认 `*`）。
   - `GET /healthz`、`GET /api/stats`。
-- 前端默认请求**同源相对路径** `/relay-master/v1/serverlist`；生产 nginx 反代 `/relay-master/*`，
+- 前端默认请求 **`https://master.landmine.top/v1/serverlist`**；生产也可以改用 nginx 反代 `/relay-master/*`，
   可用 `<meta name="relay-master-base">` / `window.DDWEB_MASTER_BASE` / `?masterBase=` / `?master=` 调整。
 - relay 注册同时声明 `transports`（`websocket`/`webrtc`）与
   `webrtc:{enabled,host,signalUrl,udpPort}`。`host` 是 WebRTC UDP 入口的域名/IP（优先
@@ -413,8 +413,8 @@ Emscripten 版 DDNet 的 canvas 不是可编辑元素，SDL 只收 keypress，�
   需要设置仓库变量 `PAGES_BASE=/ddnet-web/wiki/`。
 
 ### 7.26 前端 relay master base
-- 默认是同源相对路径 `/relay-master/v1/serverlist`，不硬编码 `master.landmine.top`；
-  生产只改 nginx 反代即可，不用重建前端。
+- 默认是 `https://master.landmine.top/v1/serverlist`；本机开发用 `http://127.0.0.1:8391`，
+  LAN HTTPS dev（8443）走同源 `/relay-master`。生产可继续用 nginx 反代，并用 meta/window/query 覆盖。
 - 运行时覆盖：`<meta name="relay-master-base">`、`window.DDWEB_MASTER_BASE`、
   `?masterBase=<base>`、`?master=<完整 endpoint>`。
 - dev-http（8392）和 dev-https（8443）都代理 `/relay-master/*`；

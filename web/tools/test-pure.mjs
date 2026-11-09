@@ -1110,12 +1110,13 @@ await test('IME 文本按 UTF-8 安全分块（SDL_TEXTINPUT 32 字节上限）'
   for (const chunk of chunks) assert.ok(encoder.encode(chunk).length <= 30, '块超过 30 字节：' + chunk);
 });
 
-await test('relay master：相对 base 与 URL 规范化', () => {
-  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', search: '' } }), '/relay-master/v1/serverlist');
-  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'play.example.com', search: '' } }), '/relay-master/v1/serverlist');
-  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', search: '?master=master.example.com' } }), 'https://master.example.com/v1/serverlist');
-  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', search: '?masterBase=https://master.example.com' } }), 'https://master.example.com/v1/serverlist');
-  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', search: '' }, DDWEB_MASTER_BASE: '/api/relay-master' }), '/api/relay-master/v1/serverlist');
+await test('relay master：默认域名与 URL 规范化', () => {
+  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', port: '8392', search: '' } }), 'http://127.0.0.1:8391/v1/serverlist');
+  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', port: '8443', search: '' } }), '/relay-master/v1/serverlist');
+  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'play.example.com', port: '', search: '' } }), 'https://master.landmine.top/v1/serverlist');
+  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'play.example.com', port: '', search: '?master=master.example.com' } }), 'https://master.example.com/v1/serverlist');
+  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', port: '8392', search: '?masterBase=https://master.example.com' } }), 'https://master.example.com/v1/serverlist');
+  assert.equal(defaultRelayMasterUrl({ location: { hostname: 'localhost', port: '8392', search: '' }, DDWEB_MASTER_BASE: '/api/relay-master' }), '/api/relay-master/v1/serverlist');
   assert.equal(normalizeMasterUrl('/custom-master'), '/custom-master/v1/serverlist');
   assert.equal(normalizeMasterUrl('http://127.0.0.1:8391'), 'http://127.0.0.1:8391/v1/serverlist');
   assert.equal(normalizeMasterUrl('https://master.example.com/v1/serverlist'), 'https://master.example.com/v1/serverlist');

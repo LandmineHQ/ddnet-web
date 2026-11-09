@@ -59,7 +59,7 @@
 ### 前端与运维
 
 - **零构建前端**：原生 ESM，HTML/CSS/JS 直接部署；资源下载带 sha256 校验与 Cache Storage。
-- **相对 master base**：前端默认请求同源 `/relay-master/v1/serverlist`；生产只改 nginx 反代，无需重构建。
+- **默认 master 域名**：前端默认请求 `https://master.landmine.top/v1/serverlist`；本地开发用本机 `8391`，LAN HTTPS dev 走同源 `/relay-master`，也可用 meta/window/query 覆盖。
 - **可观测性**：`/api/info`、`/api/stats`、`/healthz`、master `/api/stats`，HUD 显示 WebRTC/WS 传输方式和流量。
 - **生产部署无 Caddy**：`compose.yml` 只启动 Go relay + relay master（回环端口），TLS/WSS/静态站点由 nginx 终止。
 - **完整 compose**：开发、测试、生产分离；WebRTC 回退、空闲重连、IME/剪贴板、桌面/移动端均有 E2E。
@@ -210,7 +210,7 @@ scripts/assemble-web.sh                # 组装前端 + manifest.json + wiki
 | `https://play.example.com/relay-master/v1/serverlist` | 同源 master 列表 |
 | `https://master.landmine.top/v1/serverlist` | master 直连列表 |
 
-前端 master base 可用以下方式覆盖：
+默认请求 `https://master.landmine.top/v1/serverlist`；可用以下方式覆盖（示例为同源反代）：
 
 ```html
 <meta name="relay-master-base" content="/relay-master">
@@ -320,7 +320,7 @@ flowchart LR
 
 | 配置 | 说明 |
 |---|---|
-| `<meta name="relay-master-base">` | 默认 `/relay-master`，可改同源路径 |
+| `<meta name="relay-master-base">` | 覆盖默认 master base（可填绝对域名或同源路径） |
 | `window.DDWEB_MASTER_BASE` | 运行时覆盖 base |
 | `?masterBase=<base>` | URL 覆盖 base |
 | `?master=<full endpoint>` | 覆盖完整 serverlist 地址 |

@@ -30,9 +30,9 @@
    - master 不可达时自动回退到该中继的 `GET /api/servers` 推荐列表（来源标记「后端推荐列表」）；
    - 后端连接失败：显示**错误输出面板**（请求 URL、HTTP 状态、错误、可能原因），可一键复制、重试。
    - **relay master 发现**：启动时还会请求 master 的 `/v1/serverlist`，把已验证的 relay 节点加入后端列表
-     （标记「Master 节点」，只读）。默认是**同源相对路径** `/relay-master/v1/serverlist`，生产只需在
-     nginx/网关把 `/relay-master/*` 反代到 master，随时可改 base 而不用重新构建前端；
-     也可用 `<meta name="relay-master-base">`、`window.DDWEB_MASTER_BASE`、`?masterBase=<base>` 或
+     （标记「Master 节点」，只读）。默认是 `https://master.landmine.top/v1/serverlist`；本机开发使用
+     `http://127.0.0.1:8391`，LAN HTTPS dev 使用同源 `/relay-master`。也可用
+     `<meta name="relay-master-base">`、`window.DDWEB_MASTER_BASE`、`?masterBase=<base>` 或
      `?master=<完整 URL>` 覆盖。master 不可达时只记录日志，不影响本地种子/relays.json。
 5. **进入游戏**
    - 画布全屏，左上角「后端连接信息」悬浮面板（后端、地址、延迟、服务器、协议、上下行字节）；
@@ -127,7 +127,7 @@
 | `?relay=<id 或 url>` | 预选/添加该后端；配合 autostart 可自动进入服务器列表 |
 | `?relayUrl=<url>` | 同上，直接给地址 |
 | `?target=<host:port>` | 分享/预填目标服务器（服务器列表中高亮使用） |
-| `?master=<url>` | 覆盖 relay master 完整地址（默认同源 `/relay-master/v1/serverlist`） |
+| `?master=<url>` | 覆盖 relay master 完整地址（默认 `https://master.landmine.top/v1/serverlist`） |
 | `?masterBase=<base>` | 覆盖 relay master base URL（相对或绝对） |
 
 示例：`/?connect=ws%3A%2F%2F127.0.0.1%3A8390%2Fudp%2F74.91.126.203%3A8300&autostart=1`（DDNet 官方 USA1 Tutorial）

@@ -324,10 +324,11 @@ export async function loadDiscovery(fetchImpl, url = 'relays.json') {
 
 // ---------------------------------------------------------------- relay master
 
-// Master node list endpoint. The default is a same-origin relative path so
-// production can point /relay-master/* at any master without rebuilding the
-// frontend. Override at runtime via <meta name="relay-master-base">,
-// window.DDWEB_MASTER_BASE, ?masterBase=<base> or ?master=<full endpoint>.
+// Master node list endpoint. Production defaults to the public master domain.
+// Local development uses the local master; LAN HTTPS dev uses the same-origin
+// proxy. All defaults can be overridden at runtime via
+// <meta name="relay-master-base">, window.DDWEB_MASTER_BASE, ?masterBase=<base>
+// or ?master=<full endpoint>.
 export function defaultRelayMasterUrl(win = globalThis) {
   const location = (win && win.location) || {};
   let params = null;
@@ -350,12 +351,26 @@ export function defaultRelayMasterUrl(win = globalThis) {
     const meta = win.document.querySelector('meta[name="relay-master-base"]');
     if (meta && meta.content) configured = meta.content;
   }
-  return joinMasterBase(configured || '/relay-master');
+  if (configured) return joinMasterBase(configured);
+  return joinMasterBase(defaultMasterBase(location));
+}
+
+function defaultMasterBase(location) {
+  const hostname = location && location.hostname ? location.hostname : '';
+  const port = location && location.port ? String(location.port) : '';
+  // dev-https / LAN HTTPS: same-origin nginx proxy.
+  if (port === '8443') return '/relay-master';
+  // local HTTP dev: local relay master container.
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return 'http://127.0.0.1:8391';
+  }
+  // production / GitHub Pages / custom domains.
+  return 'https://master.landmine.top';
 }
 
 function joinMasterBase(base) {
   let value = String(base == null ? '' : base).trim();
-  if (!value) value = '/relay-master';
+  if (!value) value = 'https://master.landmine.top';
   if (/\/v1\/serverlist\/?$/.test(value)) return value.replace(/\/$/, '');
   return value.replace(/\/+$/, '') + '/v1/serverlist';
 }
