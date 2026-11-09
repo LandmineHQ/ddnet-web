@@ -1,0 +1,26 @@
+{
+  "name": "ddnet-ws-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WebSocket-to-UDP relay for the DDNet web client (1 WS binary frame = 1 UDP datagram)",
+  "main": "src/server.mjs",
+  "bin": {
+    "ddnet-relay": "bin/relay.mjs"
+  },
+  "scripts": {
+    "start": "node bin/relay.mjs",
+    "dev": "node --watch bin/relay.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node test/e2e-ddnet.mjs",
+    "test:e2e:handshake": "node test/e2e-ddnet.mjs --handshake",
+    "test:rtc": "node test/rtc-probe.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.33.6",
+    "ws": "^8.22.1"
+  }
+}

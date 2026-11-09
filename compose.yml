@@ -1,0 +1,95 @@
+# Docker Compose: 生产部署（Go 中继 + relay master）
+#
+#   RELAY_DOMAIN=relay.example.com MASTER_DOMAIN=master.landmine.top \
+#   RELAY_PUBLIC_URL=wss://relay.example.com \
+#     docker compose up -d --build
+#
+# TLS / HTTPS / WSS 由生产环境的 nginx 终止，本 compose 不包含 Caddy：
+#   - relay         127.0.0.1:8080  HTTP + WS + /rtc/offer + /healthz + /api/*
+#   - relay-master  127.0.0.1:8081  /v1/register + /v1/serverlist + /healthz
+#   - relay UDP     0.0.0.0:443/udp  WebRTC ICE（与 nginx 的 TCP 443 同号）
+#   - 静态站点      nginx 直接 root 到 dist/web
+#
+# nginx 示例见 deploy/nginx.conf。前置：dist/web 已有构建产物
+# （build/build-wasm.sh + scripts/assemble-web.sh）。
+#
+# 本地验证生产镜像（不需要真实域名）：
+#   docker compose build
+#   docker compose config
+#
+# 开发环境请用 compose.dev.yml；测试请用 compose.test.yml。
+name: ddnet-web-prod
+
+services:
+  relay-master:
+    build:
+      context: ./relay-go
+      dockerfile: Dockerfile.master
+    image: ddnet-relay-master:prod
+    restart: unless-stopped
+    environment:
+      MASTER_HOST: 0.0.0.0
+      MASTER_PORT: "8081"
+      MASTER_LOG_LEVEL: info
+      MASTER_CORS_ORIGINS: ${MASTER_CORS_ORIGINS:-*}
+      MASTER_TRUST_PROXY: "true"
+      MASTER_PROBE_INTERVAL_MS: ${MASTER_PROBE_INTERVAL_MS:-900000}
+      MASTER_PROBE_TIMEOUT_MS: ${MASTER_PROBE_TIMEOUT_MS:-5000}
+      MASTER_HEARTBEAT_MS: ${MASTER_HEARTBEAT_MS:-30000}
+    # nginx 在宿主机上反代；只绑定回环，避免 master API 直接暴露公网
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  relay:
+    build:
+      context: ./relay-go
+      dockerfile: Dockerfile
+    image: ddnet-relay-go:prod
+    restart: unless-stopped
+    environment:
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: "8080"
+      RELAY_LOG_LEVEL: info
+      # 生产环境务必设置 token，并在前端中继配置里填同样的 token
+      RELAY_TOKENS: ${RELAY_TOKENS:-}
+      # 只允许你的站点来源连接（nginx 会把浏览器 Origin 原样带过来）
+      RELAY_ORIGINS: ${RELAY_ORIGINS:-}
+      RELAY_ALLOW_NO_ORIGIN: "false"
+      # SSRF：默认禁止私网目标；自建局域网服务器时用 RELAY_ALLOWLIST 放行
+      ALLOW_PRIVATE: "false"
+      RELAY_ALLOWLIST: ${RELAY_ALLOWLIST:-}
+      # /api/servers 推荐的服务器列表（JSON 文件，挂载只读）
+      RELAY_SERVERS_FILE: /etc/relay/servers.json
+      # WebRTC（游戏数据通道 + 延迟测量）；公网建议配置 STUN/TURN
+      RTC_ENABLED: ${RTC_ENABLED:-true}
+      RTC_ICE_SERVERS: ${RTC_ICE_SERVERS:-}
+      # WebRTC ICE 与站点 wss 共用公网 443：nginx 占 TCP，relay 占 UDP
+      RTC_UDP_PORT: ${RTC_UDP_PORT:-443}
+      RTC_PUBLIC_IP: ${RTC_PUBLIC_IP:-}
+      # relay master：默认 master.landmine.top；公网 relay 的广告地址必须显式设置
+      RELAY_MASTER_DOMAIN: ${RELAY_MASTER_DOMAIN:-https://${MASTER_DOMAIN:-master.landmine.top}}
+      RELAY_MASTER_ADVERTISE_URL: ${RELAY_PUBLIC_URL:-wss://${RELAY_DOMAIN:-localhost}}
+      RELAY_MASTER_INTERVAL_MS: ${RELAY_MASTER_INTERVAL_MS:-30000}
+      RELAY_MASTER_TIMEOUT_MS: ${RELAY_MASTER_TIMEOUT_MS:-5000}
+    volumes:
+      - ./relay/servers.example.json:/etc/relay/servers.json:ro
+    # nginx 在宿主机上反代 HTTP/WS；只绑定回环
+    ports:
+      - "127.0.0.1:8080:8080"
+      # WebRTC ICE 固定 UDP 443；与 nginx 的 TCP 443 同号不同协议
+      - "${RTC_UDP_PORT:-443}:443/udp"
+    # 非 root 用户绑定 443/UDP 所需（Linux 4.11+）
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s

@@ -1,0 +1,175 @@
+# Docker Compose: 测试栈（全部测试都通过 compose 运行，不再手写 docker run）
+#
+# 先起开发栈（提供 8390 中继 + 8392 站点；游戏服务器默认是 DDNet 官方 Tutorial）：
+#   docker compose -f compose.dev.yml up -d --build
+#
+# 然后按需运行一次性测试服务（restart: "no"，跑完即退出）：
+#   docker compose -f compose.test.yml --profile test run --rm relay-unit   # Go 中继单元测试
+#   docker compose -f compose.test.yml --profile test run --rm e2e-relay    # 真实 DDNet 0.6 握手
+#   docker compose -f compose.test.yml --profile test run --rm e2e-web      # 浏览器全流程 E2E
+#
+# 也可以一次跑完（所有 profile=test 的服务并行/串行执行，任一失败返回非 0）：
+#   docker compose -f compose.test.yml --profile test up --abort-on-container-exit --exit-code-from e2e-web
+#
+# 说明：
+#   * e2e-relay / e2e-web 用 host 网络访问 127.0.0.1:8390 中继、8391 relay master 与 127.0.0.1:8392 站点，
+#     因此必须先用 compose.dev.yml 起 dev 栈。游戏服务器默认是 DDNet 官方 Tutorial（需要出站 UDP）；
+#     e2e-web 的 master_discovery 还需要 relay master（compose.dev.yml 的 relay-master）。
+#     需要完全确定性的本地服务器时用 `--profile local-server` 起 ddnet-server-local 并设置
+#     TARGET=127.0.0.1:8313。
+#   * GO_IMAGE / CHROME_IMAGE 可覆盖镜像；本机 Docker Hub 直连不可用时用 dockerproxy.net 镜像：
+#       GO_IMAGE=dockerproxy.net/library/golang:1.24-alpine docker compose ...
+#   * relay-unit 只挂载 ./relay-go，不需要 dev 栈。
+name: ddnet-web-test
+
+services:
+  # Go 中继：go vet + go test（全部包）
+  relay-unit:
+    image: ${GO_IMAGE:-dockerproxy.net/library/golang:1.24-alpine}
+    profiles: ["test"]
+    restart: "no"
+    working_dir: /src
+    volumes:
+      - ./relay-go:/src:ro
+    environment:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+      GOCACHE: /tmp/go-cache
+      GOPATH: /tmp/gopath
+    command: ["sh", "-c", "go vet ./... && go test ./..."]
+
+  # 中继端到端：fake browser -> ws relay -> UDP -> 真实 DDNet 服务器（0.6 完整握手）
+  e2e-relay:
+    image: node:24-bookworm-slim
+    profiles: ["test"]
+    restart: "no"
+    network_mode: host
+    working_dir: /w/relay
+    volumes:
+      # relay/node_modules/ws 已存在（npm ci 过）；整个仓库只读挂载
+      - ./:/w:ro
+    environment:
+      RELAY_URL: ${RELAY_URL:-ws://127.0.0.1:8390}
+      RELAY_TARGET: ${RELAY_TARGET:-74.91.126.203:8300}
+    command: ["node", "test/e2e-ddnet.mjs", "--handshake", "--no-game-data"]
+
+  # 浏览器全流程 E2E：真实 wasm + 真实中继 + 真实服务器（ux_flow / ux_edge / ux_settings）
+  syntax-check:
+    image: ddcheck:latest
+    profiles: ["test"]
+    restart: "no"
+    working_dir: /w
+    volumes:
+      - ./:/w:ro
+    environment:
+      ROOT: /w
+    command: ["bash", "tests/syntax-check-inner.sh"]
+
+  # 慢速回归：断开后等中继空闲超时（60s）再重连同一服务器，验证 C++ 会重开
+  # 已关闭的 WebSocket（不包含在默认 e2e-web 里，避免每次 CI 多等 70s）。
+  e2e-reconnect:
+    image: ${CHROME_IMAGE:-ddchrome:latest}
+    profiles: ["slow"]
+    restart: "no"
+    network_mode: host
+    working_dir: /w/tests
+    entrypoint: ["bash"]
+    command: ["-lc", "node e2e/relay_reconnect.mjs"]
+    volumes:
+      - ./:/w
+    environment:
+      CHROME: /usr/bin/chromium
+      BASE_URL: ${BASE_URL:-http://127.0.0.1:8392}
+      RELAY_URL: ${RELAY_URL:-ws://127.0.0.1:8390}
+      TARGET: ${TARGET:-74.91.126.203:8300}
+      IDLE_WAIT_MS: ${IDLE_WAIT_MS:-70000}
+      SHOT_DIR: /w/tests/out
+
+  # 可选：完全确定性的本地 DDNet 测试服务器（默认不启动）。
+  #   docker compose -f compose.test.yml --profile local-server up -d ddnet-server-local
+  #   TARGET=127.0.0.1:8313 TARGET2=127.0.0.1:8313 ... run --rm e2e-web
+  ddnet-server-local:
+    image: ddnet:0.0.1
+    profiles: ["local-server"]
+    container_name: ddnet-web-test-server
+    restart: "no"
+    working_dir: /ddnet
+    command:
+      - ./DDNet-Server
+      - sv_port 8303
+      - sv_register 0
+      - sv_name DDNet Web (test)
+      - sv_max_clients_per_ip 32
+    volumes:
+      - ./relay/.cache/DDNet-20.2.1-linux_x86_64:/ddnet
+    ports:
+      - "8313:8303/udp"
+
+  # WebRTC 回退回归：起一个关闭 RTC 的 Go 后端（8397），客户端应自动回退 WS。
+  relay-no-rtc:
+    image: ${RELAY_IMAGE:-ddnet-relay-go:dev}
+    profiles: ["fallback"]
+    restart: "no"
+    network_mode: host
+    environment:
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: "8397"
+      RTC_ENABLED: "false"
+      ALLOW_PRIVATE: "true"
+      RELAY_ALLOWLIST: 127.0.0.1/32
+      RELAY_LOG_LEVEL: warn
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8397/healthz || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  e2e-rtc-fallback:
+    image: ${CHROME_IMAGE:-ddchrome:latest}
+    profiles: ["fallback"]
+    restart: "no"
+    network_mode: host
+    working_dir: /w/tests
+    entrypoint: ["bash"]
+    command: ["-lc", "node e2e/rtc_transport.mjs"]
+    depends_on:
+      relay-no-rtc:
+        condition: service_healthy
+    volumes:
+      - ./:/w
+    environment:
+      CHROME: /usr/bin/chromium
+      BASE_URL: ${BASE_URL:-http://127.0.0.1:8392}
+      RELAY_URL: ws://127.0.0.1:8397
+      TARGET: ${TARGET:-74.91.126.203:8300}
+      EXPECT: ws
+      SHOT_DIR: /w/tests/out
+
+  e2e-web:
+    image: ${CHROME_IMAGE:-ddchrome:latest}
+    profiles: ["test"]
+    restart: "no"
+    network_mode: host
+    working_dir: /w/tests
+    # ddchrome 自带 entrypoint 会把参数交给 bash；这里显式覆盖成 bash -lc
+    entrypoint: ["bash"]
+    command:
+      - -lc
+      - >
+        rc=0;
+        for f in e2e/ux_flow.mjs e2e/ux_edge.mjs e2e/ux_settings.mjs e2e/relay_join.mjs e2e/mobile_mode.mjs e2e/desktop_mode.mjs e2e/desktop_touch.mjs e2e/ime_clipboard.mjs e2e/rtc_transport.mjs e2e/server_list.mjs e2e/master_discovery.mjs; do
+          echo "=== $$f ===";
+          node "$$f" || rc=1;
+        done;
+        exit $$rc
+    volumes:
+      # 仓库可写：E2E 会把截图写到 tests/out/
+      - ./:/w
+      - /usr/share/fonts/opentype/noto:/usr/share/fonts/opentype/noto:ro
+    environment:
+      CHROME: /usr/bin/chromium
+      BASE_URL: ${BASE_URL:-http://127.0.0.1:8392}
+      RELAY_URL: ${RELAY_URL:-ws://127.0.0.1:8390}
+      TIMEOUT_MS: ${TIMEOUT_MS:-240000}
+      TARGET: ${TARGET:-74.91.126.203:8300}
+      SHOT_DIR: /w/tests/out

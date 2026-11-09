@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-device="desktop">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="description" content="在浏览器中通过 WebSocket 中继游玩 DDNet">
+  <meta name="relay-master-base" content="/relay-master">
+  <title>DDNet Web · 浏览器客户端</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ffa51e'/%3E%3Ctext x='16' y='23' font-family='Arial' font-size='16' font-weight='bold' text-anchor='middle' fill='%23121419'%3EDD%3C/text%3E%3C/svg%3E">
+  <script>
+    // 首屏前应用已保存的主题，避免闪烁；首次访问默认亮色
+    try {
+      var savedTheme = localStorage.getItem('ddweb.theme.v1');
+      document.documentElement.setAttribute('data-theme', savedTheme === 'dark' ? 'dark' : 'light');
+    } catch (error) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  </script>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="brandbar">
+      <a class="brand" href="./" aria-label="DDNet Web 首页">
+        <span class="brand-logo" aria-hidden="true">DD</span>
+        <span class="brand-text">DDNet <b>Web</b></span>
+      </a>
+      <div id="status-pills" class="pills" aria-label="运行环境状态"></div>
+      <div class="brand-actions">
+        <button id="btn-theme" class="btn btn-ghost btn-sm theme-toggle" type="button" aria-pressed="false" aria-label="切换深色模式" title="切换明暗主题">
+          <span id="theme-icon" class="theme-icon" aria-hidden="true">☾</span>
+          <span id="theme-label">深色</span>
+        </button>
+        <button id="btn-advanced" class="btn btn-ghost btn-sm" type="button">高级</button>
+      </div>
+    </header>
+
+    <main class="view-stack">
+      <section id="view-relays" class="view" aria-label="后端选择">
+        <div class="hero">
+          <p class="eyebrow">第 1 步 · 选择后端</p>
+          <h1>先去哪个服务器？</h1>
+          <p class="hero-sub">按实测延迟从低到高排列。点一张卡片即可连接；没有合适的？添加你自己的后端。</p>
+        </div>
+
+        <div id="direct-banner" class="banner banner-accent" hidden>
+          <div class="banner-main">
+            <span class="banner-icon" aria-hidden="true">⚡</span>
+            <div>
+              <strong>检测到直连链接</strong>
+              <div id="direct-banner-text" class="banner-text"></div>
+            </div>
+          </div>
+          <div class="banner-actions">
+            <button id="btn-direct-enter" class="btn btn-primary btn-sm" type="button">进入游戏</button>
+            <button id="btn-direct-dismiss" class="btn btn-ghost btn-sm" type="button">忽略</button>
+          </div>
+        </div>
+
+        <div class="grid-head">
+          <div id="relay-summary" class="summary">正在测量后端延迟…</div>
+          <button id="btn-refresh-latency" class="btn btn-ghost btn-sm" type="button">
+            <span class="btn-icon" aria-hidden="true">↻</span> 重新测速
+          </button>
+        </div>
+        <div id="relay-grid" class="relay-grid" role="list"></div>
+
+        <div class="view-footer">
+          <button id="btn-add-relay" class="btn btn-ghost" type="button">＋ 添加自定义后端</button>
+          <button id="btn-restore-relays" class="btn btn-ghost" type="button" hidden>恢复默认后端</button>
+          <span id="cache-badge" class="cache-badge" hidden></span>
+        </div>
+      </section>
+
+      <section id="view-servers" class="view" hidden aria-label="游戏服务器列表">
+        <div class="server-head">
+          <button id="btn-back-relays" class="btn btn-ghost btn-sm" type="button">← 返回</button>
+          <div class="server-head-main">
+            <h2 id="servers-title">游戏服务器</h2>
+            <div id="servers-subtitle" class="muted small"></div>
+          </div>
+          <div class="server-head-latency">
+            <span id="servers-latency" class="latency-badge is-unknown">测速中…</span>
+          </div>
+        </div>
+
+        <div id="servers-notice" class="banner" hidden>
+          <div class="banner-main"><span class="banner-icon" aria-hidden="true">ℹ</span><div id="servers-notice-text" class="banner-text"></div></div>
+        </div>
+
+        <div id="servers-error" class="error-panel" hidden>
+          <div class="error-head">
+            <span class="error-icon" aria-hidden="true">!</span>
+            <div>
+              <h3 id="servers-error-title">无法连接后端</h3>
+              <p id="servers-error-hint" class="muted small"></p>
+            </div>
+          </div>
+          <pre id="servers-error-text" class="error-text"></pre>
+          <div class="error-actions">
+            <button id="btn-error-copy" class="btn btn-ghost btn-sm" type="button">复制错误</button>
+            <button id="btn-error-retry" class="btn btn-primary btn-sm" type="button">重试</button>
+          </div>
+        </div>
+
+        <div id="touch-guide" class="touch-guide" hidden aria-label="手机 / 平板触屏操作说明">
+          <div class="touch-guide-head">
+            <span class="touch-guide-badge" aria-hidden="true">触屏</span>
+            <div class="touch-guide-title">
+              <h3>手机 / 平板触屏操作</h3>
+              <p class="muted small">触屏按钮由 DDNet 内置触屏控制提供，进入游戏后才会出现。</p>
+            </div>
+            <button id="btn-touch-guide-close" class="icon-btn icon-btn-sm" type="button" aria-label="收起触屏操作说明">×</button>
+          </div>
+          <ul id="touch-guide-list" class="touch-guide-list"></ul>
+          <div class="touch-guide-actions">
+            <button id="btn-touch-fullscreen" class="btn btn-primary btn-sm" type="button">进入全屏</button>
+            <span class="muted small">进入游戏时会自动尝试全屏并锁定横屏；若浏览器拒绝，请手动旋转屏幕。</span>
+          </div>
+        </div>
+
+        <div id="servers-content">
+          <div class="toolbar">
+            <label class="search">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input id="server-search" type="search" autocomplete="off" spellcheck="false" placeholder="搜索名称、地图、地址、类型…">
+            </label>
+            <div class="segmented" role="group" aria-label="DDNet 协议版本">
+              <button id="btn-protocol-6" class="seg-btn is-active" type="button" aria-pressed="true">0.6</button>
+              <button id="btn-protocol-7" class="seg-btn" type="button" aria-pressed="false">0.7</button>
+            </div>
+            <button id="btn-refresh-servers" class="btn btn-ghost btn-sm" type="button">刷新官方列表</button>
+          </div>
+          <div class="server-filters" aria-label="服务器筛选">
+            <span id="servers-count" class="muted small">—</span>
+            <label class="filter-field" for="server-filter-protocol">协议
+              <select id="server-filter-protocol"><option value="">全部协议</option></select>
+            </label>
+            <label class="filter-field" for="server-filter-type">类型
+              <select id="server-filter-type"><option value="">全部类型</option></select>
+            </label>
+            <label class="filter-field" for="server-filter-region">地区
+              <select id="server-filter-region"><option value="">全部地区</option></select>
+            </label>
+            <label class="filter-field" for="server-filter-sort">排序
+              <select id="server-filter-sort">
+                <option value="players">玩家数（多→少）</option>
+                <option value="name">名称</option>
+                <option value="region">地区</option>
+                <option value="none">官方原顺序</option>
+              </select>
+            </label>
+            <label class="filter-check"><input id="server-filter-hide-full" type="checkbox"> 隐藏满员</label>
+            <label class="filter-check"><input id="server-filter-hide-locked" type="checkbox"> 隐藏密码房</label>
+          </div>
+          <div id="server-list" class="server-list" role="list"></div>
+          <div id="server-pager" class="pager" hidden></div>
+        </div>
+
+        <details id="advanced-connect" class="details">
+          <summary>手动输入服务器地址</summary>
+          <div class="details-body">
+            <div class="input-row">
+              <input id="manual-target" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="例如 127.0.0.1:8303">
+              <button id="btn-manual-connect" class="btn btn-primary btn-sm" type="button">进入</button>
+            </div>
+            <p class="muted small">格式为 host:port；地址会通过当前后端转发。</p>
+          </div>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <canvas id="canvas" tabindex="0" aria-label="DDNet 游戏画布">当前浏览器不支持 canvas。</canvas>
+
+  <div id="download-modal" class="overlay" hidden>
+    <div class="modal-card download-card" role="dialog" aria-modal="true" aria-labelledby="download-title">
+      <div class="download-illustration" aria-hidden="true">
+        <span class="download-disc">DD</span>
+        <span class="download-arrow">↓</span>
+      </div>
+      <h2 id="download-title">首次使用需要下载客户端资源</h2>
+      <p class="muted">浏览器需要先下载 DDNet 客户端本体与资源包。下载并校验后会缓存在本机，以后打开不再提示。</p>
+      <ul id="download-files" class="file-list"></ul>
+      <div class="download-meta">
+        <span id="download-total" class="muted small"></span>
+        <span id="download-note" class="muted small"></span>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-download-later" class="btn btn-ghost" type="button">稍后再说</button>
+        <button id="btn-download-start" class="btn btn-primary btn-lg" type="button">开始下载</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading-view" class="overlay" hidden>
+    <div class="modal-card loading-card" role="dialog" aria-modal="true" aria-labelledby="loading-title">
+      <button id="btn-loading-close" class="icon-btn" type="button" aria-label="关闭载入页">×</button>
+      <p class="eyebrow">正在载入</p>
+      <h2 id="loading-title">准备客户端资源</h2>
+      <p id="loading-relay" class="muted small"></p>
+      <div id="loading-progress" class="progress-list"></div>
+      <p id="loading-note" class="muted small">下载会在后台继续，关闭此页面不会中断。</p>
+      <div class="modal-actions">
+        <button id="btn-loading-cancel" class="btn btn-ghost btn-sm" type="button">取消下载</button>
+      </div>
+    </div>
+  </div>
+
+  <aside id="download-widget" class="widget" hidden aria-live="polite">
+    <div class="widget-head">
+      <span id="widget-title" class="widget-title">正在下载客户端资源</span>
+      <span id="widget-overall" class="widget-overall">0%</span>
+      <button id="btn-widget-min" class="icon-btn icon-btn-sm" type="button" aria-label="最小化下载进度">–</button>
+    </div>
+    <div id="widget-progress" class="progress-list compact"></div>
+    <div class="widget-foot">
+      <span id="widget-speed" class="muted small"></span>
+      <button id="btn-widget-retry" class="btn btn-ghost btn-xs" type="button" hidden>重试</button>
+    </div>
+  </aside>
+
+  <div id="hud-panel" class="hud-panel" hidden aria-label="后端连接信息">
+    <div class="hud-head">
+      <span class="dot" aria-hidden="true"></span>
+      <span>后端连接信息</span>
+      <button id="btn-hud-close" class="icon-btn icon-btn-sm" type="button" aria-label="隐藏面板">×</button>
+    </div>
+    <div class="hud-body">
+      <div class="hud-row"><span class="hud-label">后端</span><span id="hud-relay-name" class="hud-value">—</span></div>
+      <div class="hud-row"><span class="hud-label">地址</span><span id="hud-relay-address" class="hud-value">—</span></div>
+      <div class="hud-row"><span class="hud-label">延迟</span><span class="hud-value"><span id="hud-latency" class="latency-badge is-unknown">—</span><span id="hud-latency-method" class="hud-method"></span></span></div>
+      <div class="hud-row"><span class="hud-label">服务器</span><span id="hud-target" class="hud-value">—</span></div>
+      <div class="hud-row"><span class="hud-label">协议</span><span id="hud-protocol" class="hud-value">0.6</span></div>
+      <div class="hud-row"><span class="hud-label">传输</span><span id="hud-transport" class="hud-value">协商中…</span></div>
+      <div class="hud-row"><span class="hud-label">流量</span><span id="hud-traffic" class="hud-value">—</span></div>
+    </div>
+    <div class="hud-foot">
+      <span class="muted small keyboard-only">Ctrl+` 显示/隐藏</span>
+      <button id="btn-hud-reconnect" class="btn btn-ghost btn-xs" type="button">断开并返回</button>
+    </div>
+  </div>
+  <div id="hud-hint" class="hud-hint keyboard-only" hidden>按 <kbd>Ctrl</kbd>+<kbd>`</kbd> 显示后端连接信息</div>
+  <div id="touch-hint" class="touch-hint" hidden aria-label="触屏操作提示">
+    <span class="touch-hint-text">左侧移动 · 右侧摇杆瞄准/开火 · 返回 = Esc</span>
+    <button id="btn-touch-hint-hud" class="btn btn-ghost btn-xs" type="button">信息</button>
+    <button id="btn-touch-hint-fullscreen" class="btn btn-ghost btn-xs" type="button">全屏</button>
+    <button id="btn-touch-hint-close" class="icon-btn icon-btn-sm" type="button" aria-label="隐藏触屏提示">×</button>
+  </div>
+
+  <div id="spotlight" class="spotlight" hidden role="dialog" aria-modal="true" aria-labelledby="spotlight-title">
+    <div class="spotlight-shade" data-shade="top" aria-hidden="true"></div>
+    <div class="spotlight-shade" data-shade="bottom" aria-hidden="true"></div>
+    <div class="spotlight-shade" data-shade="left" aria-hidden="true"></div>
+    <div class="spotlight-shade" data-shade="right" aria-hidden="true"></div>
+    <div id="spotlight-hole" class="spotlight-hole" aria-hidden="true"></div>
+    <div id="spotlight-card" class="spotlight-card">
+      <div id="spotlight-step" class="eyebrow">引导 1/1</div>
+      <h3 id="spotlight-title">这里是后端连接信息</h3>
+      <p id="spotlight-text" class="muted small"></p>
+      <div class="spotlight-actions">
+        <button id="btn-spotlight-skip" class="btn btn-ghost btn-sm" type="button">跳过引导</button>
+        <button id="btn-spotlight-next" class="btn btn-primary btn-sm" type="button">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="game-exit" class="overlay" hidden>
+    <div class="modal-card exit-card" role="dialog" aria-modal="true">
+      <h2 id="exit-title">客户端已退出</h2>
+      <p id="exit-text" class="muted">可以返回服务器列表重新进入游戏，或重新加载页面。</p>
+      <div class="modal-actions">
+        <button id="btn-exit-back" class="btn btn-ghost" type="button">返回服务器列表</button>
+        <button id="btn-exit-reload" class="btn btn-primary" type="button">重新加载页面</button>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="relay-dialog" class="dialog">
+    <form id="relay-form" novalidate>
+      <h2 id="relay-dialog-title">添加自定义后端</h2>
+      <p class="muted small">填写中继地址即可。支持 ws:// 与 wss://，可选 token；也可以在「高级」里改昵称。</p>
+      <div class="field">
+        <label for="relay-url">后端地址</label>
+        <input id="relay-url" type="text" autocomplete="off" spellcheck="false" placeholder="ws://127.0.0.1:8390 或 wss://relay.example.com">
+      </div>
+      <div class="field">
+        <label for="relay-name">显示名称（可选）</label>
+        <input id="relay-name" type="text" maxlength="64" autocomplete="off" placeholder="例如 官方中继">
+      </div>
+      <details class="details">
+        <summary>高级</summary>
+        <div class="details-body">
+          <div class="field">
+            <label for="relay-token">Token（可选）</label>
+            <input id="relay-token" type="text" autocomplete="off" spellcheck="false" placeholder="连接时附加 ?token=…">
+          </div>
+        </div>
+      </details>
+      <div id="relay-form-error" class="form-error" hidden></div>
+      <div class="dialog-actions">
+        <button id="btn-relay-delete" class="btn btn-danger btn-sm" type="button" hidden>删除</button>
+        <span class="spacer"></span>
+        <button id="btn-relay-cancel" class="btn btn-ghost" type="button">取消</button>
+        <button id="btn-relay-save" class="btn btn-primary" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="advanced-dialog" class="dialog">
+    <h2>高级设置</h2>
+    <div class="field">
+      <label for="nickname-input">昵称（可选）</label>
+      <input id="nickname-input" type="text" maxlength="32" autocomplete="off" placeholder="仅保存在本机">
+      <p class="muted small">昵称只保存在本地，不会影响连接。</p>
+    </div>
+    <div class="advanced-block">
+      <h3>运行环境</h3>
+      <ul id="check-list" class="check-list"></ul>
+      <button id="btn-recheck" class="btn btn-ghost btn-sm" type="button">重新检测</button>
+    </div>
+    <div class="advanced-block">
+      <h3>本地缓存</h3>
+      <p id="cache-info" class="muted small">—</p>
+      <div class="inline-actions">
+        <button id="btn-clear-cache" class="btn btn-danger btn-sm" type="button">清除资源缓存</button>
+        <button id="btn-redownload" class="btn btn-ghost btn-sm" type="button">重新下载资源</button>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <span class="spacer"></span>
+      <button id="btn-advanced-close" class="btn btn-primary" type="button">完成</button>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog dialog-sm">
+    <h2 id="confirm-title">确认</h2>
+    <p id="confirm-text" class="muted"></p>
+    <div class="dialog-actions">
+      <span class="spacer"></span>
+      <button id="btn-confirm-cancel" class="btn btn-ghost" type="button">取消</button>
+      <button id="btn-confirm-ok" class="btn btn-danger" type="button">删除</button>
+    </div>
+  </dialog>
+
+  <div id="toast-host" class="toast-host" aria-live="polite"></div>
+  <noscript><p class="noscript">需要启用 JavaScript 才能使用 DDNet Web。</p></noscript>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

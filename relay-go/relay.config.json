@@ -1,0 +1,62 @@
+{
+  "name": "DDNet Relay (Go)",
+  "region": "",
+  "host": "127.0.0.1",
+  "port": 8390,
+  "udpPath": "/udp",
+  "logLevel": "info",
+  "trustProxy": false,
+  "auth": {
+    "tokens": [],
+    "originAllowlist": [],
+    "allowNoOrigin": true
+  },
+  "security": {
+    "allowPrivate": false,
+    "allowlist": [
+      "127.0.0.1/32",
+      "::1/128"
+    ],
+    "dnsTimeoutMs": 5000
+  },
+  "limits": {
+    "maxConnectionsPerIp": 8,
+    "maxConnectionsTotal": 1000,
+    "maxFrameBytes": 2048,
+    "hardMaxFrameBytes": 65536,
+    "maxPacketsPerSecond": 300,
+    "packetBurst": 600,
+    "maxBytesPerSecond": 262144,
+    "byteBurst": 524288,
+    "idleTimeoutMs": 60000,
+    "maxConnectionMs": 0,
+    "maxBufferedBytes": 524288,
+    "pingIntervalMs": 20000,
+    "maxPendingPackets": 256
+  },
+  "api": {
+    "statsEnabled": true,
+    "serversEnabled": true,
+    "corsOrigins": [
+      "*"
+    ]
+  },
+  "rtc": {
+    "enabled": true,
+    "maxPeers": 16,
+    "maxLifetimeMs": 60000,
+    "maxOfferBytes": 262144,
+    "maxOffersPerIpPerMinute": 30,
+    "offerBurst": 10,
+    "gatherTimeoutMs": 5000,
+    "iceServers": []
+  },
+  "servers": [
+    {
+      "name": "Local DDNet (e2e)",
+      "host": "127.0.0.1",
+      "port": 8313,
+      "note": "Local DDNet server started by relay/test/start-ddnet-server.sh"
+    }
+  ]
+}

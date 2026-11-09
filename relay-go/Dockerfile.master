@@ -1,0 +1,24 @@
+# Multi-stage build for the DDNet relay master (registry + WS liveness checks).
+ARG BUILDER_IMAGE=dockerproxy.net/library/golang:1.24-alpine
+ARG RUNTIME_IMAGE=dockerproxy.net/library/alpine:3.20
+
+FROM ${BUILDER_IMAGE} AS build
+WORKDIR /src
+ENV CGO_ENABLED=0 GOOS=linux
+COPY go.mod go.sum ./
+COPY vendor ./vendor
+COPY cmd ./cmd
+COPY internal ./internal
+RUN go build -mod=vendor -trimpath -ldflags="-s -w" -o /out/master ./cmd/master
+
+FROM ${RUNTIME_IMAGE}
+RUN addgroup -S master && adduser -S -G master -h /app master
+WORKDIR /app
+COPY --from=build /out/master /usr/local/bin/master
+ENV MASTER_HOST=0.0.0.0 \
+    MASTER_PORT=8391
+USER master
+EXPOSE 8391
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+	CMD wget -q -O /dev/null "http://127.0.0.1:${MASTER_PORT:-8391}/healthz" || exit 1
+ENTRYPOINT ["/usr/local/bin/master"]

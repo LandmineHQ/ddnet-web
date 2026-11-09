@@ -1,0 +1,160 @@
+# Docker Compose: 本地开发 / 演示环境（全部服务通过 compose 管理，不需要本地游戏服务器）
+#
+#   docker compose -f compose.dev.yml up -d --build    # 启动（等同 ./scripts/dev-up.sh）
+#   docker compose -f compose.dev.yml down             # 停止（等同 ./scripts/dev-down.sh）
+#   docker compose -f compose.dev.yml ps               # 状态
+#   docker compose -f compose.dev.yml logs -f relay    # 看日志
+#
+# 服务（端口与旧版 scripts/dev-up.sh 一致）：
+#   relay        Go 中继         ws://0.0.0.0:8390          （network_mode: host）
+#   relay-master Go 节点注册中心 http://0.0.0.0:8391        （network_mode: host）
+#   web-http     站点 HTTP       http://0.0.0.0:8392         （network_mode: host）
+#   web-https    站点 HTTPS+wss  https://0.0.0.0:8443        （network_mode: host，反代到 8390/8391）
+#
+# 说明：
+#   * **不再启动本地 DDNet 服务器**：/api/servers 直接给出 DDNet 官方 Tutorial 服务器，
+#     中继通过 UDP 连到官方服务器（host 网络即可出网）。
+#   * relay / web-http / web-https 用 host 网络，保持局域网访问行为（8443 一个端口即可）。
+#   * relay 从 ./relay-go 构建（Go 版中继，含 WebRTC DataChannel）。旧 Node 中继仍在 relay/ 仅作参考。
+#   * 所有容器 restart: unless-stopped，退出 agent 会话也不会停（见 AGENTS.md 7.7）。
+name: ddnet-web-dev
+
+configs:
+  # 中继 /api/servers 的服务器列表：DDNet 官方 Tutorial（Novice）服务器。
+  # 需要换服时改这里即可，前端服务器页也支持手动输入 host:port。
+  relay-servers-dev:
+    content: |
+      {
+        "servers": [
+          { "name": "DDNet USA1 - Novice (Tutorial)", "host": "74.91.126.203", "port": 8300, "region": "US", "note": "DDNet 官方 Tutorial" },
+          { "name": "DDNet USA4 - Novice (Tutorial)", "host": "5.78.113.138", "port": 8300, "region": "US", "note": "DDNet 官方 Tutorial" },
+          { "name": "DDNet GER - Novice (Tutorial)", "host": "45.141.57.22", "port": 8300, "region": "EU", "note": "DDNet 官方 Tutorial" },
+          { "name": "DDNet Singapore - Novice (Tutorial)", "host": "172.104.61.198", "port": 8300, "region": "SG", "note": "DDNet 官方 Tutorial" }
+        ]
+      }
+
+services:
+  relay-master:
+    build:
+      context: ./relay-go
+      dockerfile: Dockerfile.master
+    image: ddnet-relay-master:dev
+    container_name: ddnet-web-dev-master
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MASTER_HOST: 0.0.0.0
+      MASTER_PORT: "8391"
+      MASTER_LOG_LEVEL: info
+      MASTER_CORS_ORIGINS: "*"
+      MASTER_TRUST_PROXY: "true"
+      # 生产默认 15 分钟；开发栈保持同一行为，liveness 检查由单测覆盖
+      MASTER_PROBE_INTERVAL_MS: "900000"
+      MASTER_PROBE_TIMEOUT_MS: "5000"
+      MASTER_HEARTBEAT_MS: "30000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8391/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  relay:
+    build:
+      context: ./relay-go
+      dockerfile: Dockerfile
+    image: ddnet-relay-go:dev
+    container_name: ddnet-web-dev-relay
+    restart: unless-stopped
+    # host 网络：监听 0.0.0.0:8390；出站 UDP 直连 DDNet 官方 Tutorial 服务器
+    network_mode: host
+    environment:
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: "8390"
+      RELAY_LOG_LEVEL: info
+      # 开发环境：空 token + 允许无 Origin（浏览器从 8392/8443 访问 8390 时 Origin 不同）
+      RELAY_TOKENS: ""
+      RELAY_ORIGINS: ""
+      RELAY_ALLOW_NO_ORIGIN: "true"
+      # SSRF：默认放行公网目标；保留 127.0.0.1 白名单便于临时指定本机测试服
+      ALLOW_PRIVATE: "true"
+      RELAY_ALLOWLIST: 127.0.0.1/32
+      # 开发环境会有多个页面/Dummy 从同一 IP 连入
+      MAX_CONNS_PER_IP: "32"
+      # WebRTC：游戏数据通道 + 延迟测量；E2E 会反复建 PeerConnection，放宽限额
+      RTC_ENABLED: "true"
+      RTC_MAX_PEERS: "64"
+      RTC_MAX_OFFERS_PER_IP_PER_MINUTE: "240"
+      RTC_OFFER_BURST: "64"
+      # 公网/跨网段测试时可配 STUN/TURN，例如 stun:stun.l.google.com:19302
+      RTC_ICE_SERVERS: ${RTC_ICE_SERVERS:-}
+      # TCP(WS) 与 UDP(ICE) 共用同一个 8390 端口（host 网络下互不冲突）
+      RTC_UDP_PORT: "8390"
+      # /api/servers 的服务器列表（见文件顶部 configs）
+      RELAY_SERVERS_FILE: /etc/relay/servers.json
+      # 向 master 注册：本地 master，广告地址给本地浏览器使用。
+      # 设置 RELAY_TOKENS 后 relay 会自动跳过注册（见 config.ShouldRegister）。
+      RELAY_MASTER_DOMAIN: http://127.0.0.1:8391
+      RELAY_MASTER_ADVERTISE_URL: ws://127.0.0.1:8390
+      RELAY_MASTER_INTERVAL_MS: "30000"
+      RELAY_MASTER_TIMEOUT_MS: "5000"
+    configs:
+      - source: relay-servers-dev
+        target: /etc/relay/servers.json
+    healthcheck:
+      # relay-go 运行镜像是 alpine（busybox wget），/healthz 与 Node 版中继一致
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8390/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  web-http:
+    image: node:24-bookworm-slim
+    container_name: ddnet-web-dev-http
+    restart: unless-stopped
+    # host 网络：0.0.0.0:8392，本机 http://localhost:8392 即安全上下文
+    network_mode: host
+    working_dir: /root/test
+    command: ["node", "web/serve.mjs", "--port", "8392", "--host", "0.0.0.0", "--root", "dist/web", "--master", "127.0.0.1:8391"]
+    volumes:
+      - ./:/root/test:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8392/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  web-https:
+    image: node:24-bookworm-slim
+    container_name: ddnet-web-dev-https
+    restart: unless-stopped
+    # host 网络：https + 同端口 wss 反代都在 8443
+    network_mode: host
+    working_dir: /root/test
+    command:
+      - node
+      - scripts/dev-https.mjs
+      - --port
+      - "8443"
+      - --root
+      - dist/web
+      - --relay
+      - 127.0.0.1:8390
+      - --master
+      - 127.0.0.1:8391
+    volumes:
+      # 静态站点、自签证书（tests/tls）、relay/node_modules/ws 都在仓库里，只读挂载
+      - ./:/root/test:ro
+    depends_on:
+      relay:
+        condition: service_healthy
+      relay-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('https').get({host:'127.0.0.1',port:8443,path:'/',rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s

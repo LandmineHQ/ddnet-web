@@ -1,0 +1,30 @@
+# Upstream DDNet source / worktree (patch is tracked instead)
+/ddnet/
+/ddnet-dev/
+/ddnet-libs-tmp/
+
+# Generated build/deploy artifacts
+/build/
+/dist/
+/web/tools/screenshots/
+/tests/out/
+/tests/tls/
+
+# Dependency caches
+/node_modules/
+/tests/node_modules/
+/relay/node_modules/
+/relay/.cache/
+/.npm/
+/.docker/
+/.tmp/
+
+# Go build output and optional local binaries
+/relay-go/bin/
+/relay-go/relay
+/relay-go/master
+
+# Secrets / local certs
+*.pem
+*.key
+*.log

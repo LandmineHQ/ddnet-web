@@ -1,0 +1,1283 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e33006f..5abea2d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -630,7 +630,13 @@ if(UNIX)
+ endif()
+ find_package(Threads)
+ find_package(Wavpack)
+-if(WEBSOCKETS)
++if(TARGET_OS STREQUAL "emscripten")
++  # The web client uses the browser WebSocket API as its only network transport,
++  # so websocket support is always enabled there without requiring libwebsockets.
++  set(WEBSOCKETS ON)
++  set(WEBSOCKETS_LIBRARIES)
++  set(WEBSOCKETS_INCLUDE_DIRS)
++elseif(WEBSOCKETS)
+   find_package(Websockets)
+ else()
+   set(WEBSOCKETS_LIBRARIES)
+@@ -741,7 +747,7 @@ if(MYSQL AND NOT(MYSQL_FOUND))
+   message(SEND_ERROR "You must install MySQL to compile the ${CMAKE_PROJECT_NAME} server with MySQL support")
+ endif()
+ 
+-if(WEBSOCKETS AND NOT(WEBSOCKETS_FOUND))
++if(WEBSOCKETS AND NOT(WEBSOCKETS_FOUND) AND NOT TARGET_OS STREQUAL "emscripten")
+   message(SEND_ERROR "You must install libwebsockets to compile the ${CMAKE_PROJECT_NAME} server with websocket support")
+ endif()
+ 
+@@ -2421,8 +2427,14 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
+   video.h
+   websockets.cpp
+   websockets.h
++  websockets_emscripten.cpp
+   # tidy-alphabetical-end
+ )
++if(TARGET_OS STREQUAL "emscripten")
++  # The web build has no libwebsockets; all networking goes through the browser
++  # WebSocket API instead, implemented in websockets_emscripten.cpp.
++  list(REMOVE_ITEM ENGINE_SHARED "${PROJECT_SOURCE_DIR}/src/engine/shared/websockets.cpp")
++endif()
+ set_src(ENGINE_GFX GLOB src/engine/gfx
+   # tidy-alphabetical-start
+   image.cpp
+diff --git a/cmake/toolchains/Emscripten.toolchain b/cmake/toolchains/Emscripten.toolchain
+index 80c5be2..54b9a24 100644
+--- a/cmake/toolchains/Emscripten.toolchain
++++ b/cmake/toolchains/Emscripten.toolchain
+@@ -37,7 +37,7 @@ set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s FULL_ES3=1")
+ 
+ # Make sure C callback functions are available to JS.
+ set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE=[\\$autoResumeAudioContext,\\$dynCall]")
+-set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_FUNCTIONS=_main,_EmscriptenCallbackDropFile,_EmscriptenCallbackQuit,_EmscriptenCallbackQuitForce")
++set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_FUNCTIONS=_main,_EmscriptenCallbackDropFile,_EmscriptenCallbackQuit,_EmscriptenCallbackQuitForce,_DDWeb_SetDefaultRelay,_DDWeb_InputText,_DDWeb_InputKey,_DDWeb_SetUiMousePos,_DDWeb_GetUiMouseX,_DDWeb_GetUiMouseY,_DDWeb_SetAbsoluteMouse,_DDWeb_IsMenuOpen")
+ set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_RUNTIME_METHODS=callMain,ccall")
+ 
+ # Very important: use same stack size that other platforms have, as the default of 64 KiB that Emscripten uses is too small for our code and causes stack overflows.
+diff --git a/src/base/net.cpp b/src/base/net.cpp
+index f3df498..b1c359a 100644
+--- a/src/base/net.cpp
++++ b/src/base/net.cpp
+@@ -18,6 +18,10 @@
+ #include <engine/shared/websockets.h>
+ #endif
+ 
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++#include <emscripten.h>
++#endif
++
+ #if defined(CONF_FAMILY_UNIX)
+ #include <sys/time.h> // timeval
+ #include <unistd.h> // close
+@@ -284,6 +288,14 @@ static void net_addr_str_v6(const unsigned short ip[8], int port, char *buffer,
+ 
+ void net_addr_str(const NETADDR *addr, char *string, int max_length, bool add_port)
+ {
++#if defined(CONF_PLATFORM_EMSCRIPTEN) && defined(CONF_WEBSOCKETS)
++	// WebSocket addresses store the hash of their URL in the IP field, so print the
++	// original URL instead of the meaningless hash.
++	if((addr->type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0 && websocket_addr_to_str(addr, string, max_length))
++	{
++		return;
++	}
++#endif
+ 	if((addr->type & (NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4)) != 0)
+ 	{
+ 		if(add_port)
+@@ -599,6 +611,27 @@ static int net_host_lookup_impl(const char *hostname, NETADDR *addr, int types)
+ 
+ int net_host_lookup(const char *hostname, NETADDR *addr, int types)
+ {
++#if defined(CONF_PLATFORM_EMSCRIPTEN) && defined(CONF_WEBSOCKETS)
++	// The web build has no raw sockets, so WebSocket URLs are the only supported
++	// server addresses. The URL is resolved by the browser, so no DNS lookup is
++	// performed here and the whole URL (including path and query) is kept.
++	if(str_startswith_nocase(hostname, "ws://") || str_startswith_nocase(hostname, "wss://"))
++	{
++		if((types & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0)
++		{
++			return -1;
++		}
++		return websocket_addr_from_url(hostname, addr);
++	}
++	// Plain "host:port" addresses can be redirected through a default relay backend
++	// that the web frontend configures, so that typing a normal server address in
++	// the client console or joining a server from the in-game server browser keeps
++	// working. NETTYPE_TW7 in `types` means the caller wants the 0.7 protocol.
++	if(websocket_addr_from_plain(hostname, addr, (types & NETTYPE_TW7) != 0) == 0)
++	{
++		return 0;
++	}
++#endif
+ 	const char *ws_hostname = str_startswith(hostname, "ws://");
+ 	if(ws_hostname)
+ 	{
+@@ -725,6 +758,33 @@ int net_socket_read_wait(NETSOCKET sock, std::chrono::nanoseconds nanoseconds)
+ 	const int64_t microseconds = std::chrono::duration_cast<std::chrono::microseconds>(nanoseconds).count();
+ 	dbg_assert(microseconds >= 0, "Negative wait duration %" PRId64 " not allowed", microseconds);
+ 
++#if defined(CONF_PLATFORM_EMSCRIPTEN) && defined(CONF_WEBSOCKETS)
++	// Browsers provide no file descriptors to wait on. Yielding to the browser event
++	// loop is what delivers pending WebSocket messages to this thread, so wait by
++	// sleeping (which yields with ASYNCIFY) and then check the buffer again.
++	if(sock->web_ipv4sock >= 0 && websocket_pending(sock->web_ipv4sock) > 0)
++	{
++		return 1;
++	}
++	if(sock->web_ipv6sock >= 0 && websocket_pending(sock->web_ipv6sock) > 0)
++	{
++		return 1;
++	}
++	if(microseconds > 0)
++	{
++		emscripten_sleep(microseconds >= 1000 ? (unsigned int)(microseconds / 1000) : 1);
++	}
++	if(sock->web_ipv4sock >= 0 && websocket_pending(sock->web_ipv4sock) > 0)
++	{
++		return 1;
++	}
++	if(sock->web_ipv6sock >= 0 && websocket_pending(sock->web_ipv6sock) > 0)
++	{
++		return 1;
++	}
++	return 0;
++#endif
++
+ 	fd_set readfds;
+ 	FD_ZERO(&readfds);
+ 
+diff --git a/src/engine/client/client.cpp b/src/engine/client/client.cpp
+index 88eee86..2e6922f 100644
+--- a/src/engine/client/client.cpp
++++ b/src/engine/client/client.cpp
+@@ -65,6 +65,7 @@
+ #include <generated/protocol7.h>
+ #include <generated/protocolglue.h>
+ 
++#include <game/client/gameclient.h>
+ #include <game/localization.h>
+ #include <game/version.h>
+ 
+@@ -640,22 +641,34 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
+ 	NETADDR aConnectAddrs[MAX_SERVER_ADDRESSES];
+ 	mem_zero(aConnectAddrs, sizeof(aConnectAddrs));
+ 	const char *pNextAddr = pAddress;
+-	char aBuffer[128];
++	// Larger than a plain "host:port" because WebSocket URLs can contain a path and
++	// an authentication token.
++	char aBuffer[1024];
+ 	bool OnlySixup = true;
+ 	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
+ 	{
+ 		NETADDR NextAddr;
+-		char aHost[128];
++		// Must be able to hold a full WebSocket URL on the web build.
++		char aHost[1024];
+ 		const int UrlParseResult = net_addr_from_url(&NextAddr, aBuffer, aHost, sizeof(aHost));
+ 		bool Sixup = NextAddr.type & NETTYPE_TW7;
+ 		if(UrlParseResult > 0)
+ 			str_copy(aHost, aBuffer);
+ 
+-		if(net_host_lookup(aHost, &NextAddr, m_aNetClient[CONN_MAIN].NetType()) != 0)
++		// On the web build, net_host_lookup turns plain "host:port" addresses into
++		// "<default relay>/udp/host:port" URLs. Propagate the protocol flag so the
++		// generated URL contains ?protocol=7 for 0.7 servers.
++		if(net_host_lookup(aHost, &NextAddr, m_aNetClient[CONN_MAIN].NetType() | (Sixup ? NETTYPE_TW7 : 0)) != 0)
+ 		{
+ 			log_error("client", "could not find address of %s", aHost);
+ 			continue;
+ 		}
++		// The web client selects the 0.7 protocol with a query parameter on the
++		// WebSocket URL, so the flag has to be read after resolving the address.
++		if((NextAddr.type & NETTYPE_TW7) != 0)
++		{
++			Sixup = true;
++		}
+ 		if(NumConnectAddrs == (int)std::size(aConnectAddrs))
+ 		{
+ 			log_warn("client", "too many connect addresses, ignoring %s", aHost);
+@@ -714,6 +727,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
+ 	m_CanReceiveServerCapabilities = true;
+ 
+ 	m_Sixup = OnlySixup;
++	log_info("client", "using %s protocol", m_Sixup ? "0.7 (sixup)" : "0.6");
+ 	if(m_Sixup)
+ 	{
+ 		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
+@@ -723,7 +737,11 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
+ 		m_aNetClient[CONN_MAIN].Connect(aConnectAddrs, NumConnectAddrs);
+ 	}
+ 
++#if !defined(CONF_PLATFORM_EMSCRIPTEN)
++	// STUN is only used to discover the public UDP address, which does not exist in
++	// the browser.
+ 	m_aNetClient[CONN_MAIN].RefreshStun();
++#endif
+ 	SetState(IClient::STATE_CONNECTING);
+ 
+ 	m_aInputtimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
+@@ -1124,7 +1142,13 @@ void CClient::ResetSocket()
+ 		log_error("client", "The configured bindaddr '%s' cannot be resolved.", g_Config.m_Bindaddr);
+ 		return;
+ 	}
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++	// The web client only has the browser WebSocket transport, all other address
++	// families cannot be bound because browsers do not expose raw sockets.
++	BindAddr.type = NETTYPE_WEBSOCKET_IPV4;
++#else
+ 	BindAddr.type = NETTYPE_ALL;
++#endif
+ 	for(size_t Conn = 0; Conn < std::size(m_aNetClient); Conn++)
+ 	{
+ 		char aError[256];
+@@ -2621,6 +2645,7 @@ void CClient::LoadDDNetInfo()
+ 		m_Points = Points.u.integer;
+ 	}
+ 
++#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+ 	const json_value &StunServersIpv6 = DDNetInfo["stun-servers-ipv6"];
+ 	if(StunServersIpv6.type == json_array && StunServersIpv6[0].type == json_string)
+ 	{
+@@ -2639,6 +2664,7 @@ void CClient::LoadDDNetInfo()
+ 			m_aNetClient[CONN_MAIN].FeedStunServer(Addr);
+ 		}
+ 	}
++#endif
+ 	const json_value &ConnectingIp = DDNetInfo["connecting-ip"];
+ 	if(ConnectingIp.type == json_string)
+ 	{
+@@ -3176,8 +3202,52 @@ void CClient::InitInterfaces()
+ 	m_GhostLoader.Init();
+ }
+ 
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++static CClient *s_pDDWebClient = nullptr;
++
++extern "C" EMSCRIPTEN_KEEPALIVE void DDWeb_SetUiMousePos(double X, double Y)
++{
++	if(!s_pDDWebClient || !s_pDDWebClient->GameClient())
++		return;
++	auto *pGameClient = static_cast<CGameClient *>(s_pDDWebClient->GameClient());
++	pGameClient->Ui()->SetMouseTargetNormalized(vec2((float)X, (float)Y));
++}
++
++
++extern "C" EMSCRIPTEN_KEEPALIVE int DDWeb_IsMenuOpen()
++{
++	if(!s_pDDWebClient || !s_pDDWebClient->GameClient())
++		return 0;
++	auto *pGameClient = static_cast<CGameClient *>(s_pDDWebClient->GameClient());
++	return pGameClient->m_Menus.IsActive() ? 1 : 0;
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE double DDWeb_GetUiMouseX()
++{
++	if(!s_pDDWebClient)
++		return -1.0;
++	if(!s_pDDWebClient->GameClient())
++		return -2.0;
++	auto *pGameClient = static_cast<CGameClient *>(s_pDDWebClient->GameClient());
++	return (double)pGameClient->Ui()->UpdatedMousePos().x;
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE double DDWeb_GetUiMouseY()
++{
++	if(!s_pDDWebClient)
++		return -1.0;
++	if(!s_pDDWebClient->GameClient())
++		return -2.0;
++	auto *pGameClient = static_cast<CGameClient *>(s_pDDWebClient->GameClient());
++	return (double)pGameClient->Ui()->UpdatedMousePos().y;
++}
++#endif
++
+ void CClient::Run()
+ {
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++	s_pDDWebClient = this;
++#endif
+ 	m_LocalStartTime = m_GlobalStartTime = time_get();
+ 	m_aSnapshotParts[0] = 0;
+ 	m_aSnapshotParts[1] = 0;
+@@ -3427,7 +3497,14 @@ void CClient::Run()
+ 			bool AsyncRenderOld = g_Config.m_GfxAsyncRenderOld;
+ 
+ 			// Update at cl_refresh_rate, or at cl_refresh_rate_inactive while the window is inactive.
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++			// The browser can report the window as inactive when pointer lock is released (ESC)
++			// or focus moves during Tab/scoreboard. The inactive branch uses a blocking sleep,
++			// which stalls the wasm main loop; keep the normal refresh path instead.
++			Inactive = false;
++#else
+ 			Inactive = g_Config.m_ClRefreshRateInactive && !m_pGraphics->WindowActive();
++#endif
+ 			const int RefreshRate = Inactive ? g_Config.m_ClRefreshRateInactive : g_Config.m_ClRefreshRate;
+ 			bool UpdateDue = true;
+ 			if(RefreshRate)
+@@ -3572,7 +3649,13 @@ bool CClient::InitNetworkClient(char *pError, size_t ErrorSize)
+ 		str_format(pError, ErrorSize, "The configured bindaddr '%s' cannot be resolved.", g_Config.m_Bindaddr);
+ 		return false;
+ 	}
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++	// The web client only has the browser WebSocket transport, all other address
++	// families cannot be bound because browsers do not expose raw sockets.
++	BindAddr.type = NETTYPE_WEBSOCKET_IPV4;
++#else
+ 	BindAddr.type = NETTYPE_ALL;
++#endif
+ 	for(size_t i = 0; i < std::size(m_aNetClient); i++)
+ 	{
+ 		if(!InitNetworkClientImpl(BindAddr, i, pError, ErrorSize))
+diff --git a/src/engine/client/client.h b/src/engine/client/client.h
+index 80289e3..2546619 100644
+--- a/src/engine/client/client.h
++++ b/src/engine/client/client.h
+@@ -135,7 +135,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
+ 	bool m_aDidPostConnect[NUM_DUMMIES] = {false, false};
+ 	bool m_GenerateTimeoutSeed = true;
+ 
+-	char m_aCmdConnect[256] = "";
++	char m_aCmdConnect[1024] = "";
+ 	char m_aCmdPlayDemo[IO_MAX_PATH_LENGTH] = "";
+ 	char m_aCmdEditMap[IO_MAX_PATH_LENGTH] = "";
+ 
+@@ -155,6 +155,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
+ 	class CMapDetails
+ 	{
+ 	public:
++
+ 		char m_aName[256];
+ 		int m_Size;
+ 		int m_Crc;
+diff --git a/src/engine/client/input.cpp b/src/engine/client/input.cpp
+index 1c5fdf4..09da09e 100644
+--- a/src/engine/client/input.cpp
++++ b/src/engine/client/input.cpp
+@@ -17,8 +17,23 @@
+ 
+ #include <SDL.h>
+ 
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++#include <emscripten/emscripten.h>
++#endif
++
+ #include <algorithm>
+ 
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++// Implemented in websockets_emscripten.cpp.
++extern "C" void DDWeb_SetTextInputActive(int Active);
++extern "C" void DDWeb_SetClipboardText(const char *pText);
++static bool s_DDWebAbsoluteMouse = false;
++extern "C" EMSCRIPTEN_KEEPALIVE void DDWeb_SetAbsoluteMouse(int Absolute)
++{
++	s_DDWebAbsoluteMouse = Absolute != 0;
++}
++#endif
++
+ // support older SDL version (pre 2.0.6)
+ #ifndef SDL_JOYSTICK_AXIS_MIN
+ #define SDL_JOYSTICK_AXIS_MIN (-32768)
+@@ -279,6 +294,16 @@ bool CInput::MouseRelative(float *pX, float *pY)
+ 	if(!m_MouseFocus || !m_InputGrabbed)
+ 		return false;
+ 
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++	// 指针未锁定/菜单打开时，网页通过 DDWeb_SetUiMousePos 直接给出绝对位置；
++	// 此时不再叠加 SDL 的相对增量，否则游戏光标会“双倍移动”。
++	if(s_DDWebAbsoluteMouse)
++	{
++		SDL_GetRelativeMouseState(nullptr, nullptr);
++		return false;
++	}
++#endif
++
+ 	ivec2 Relative;
+ 	SDL_GetRelativeMouseState(&Relative.x, &Relative.y);
+ 
+@@ -339,7 +364,11 @@ std::string CInput::GetClipboardText()
+ 
+ void CInput::SetClipboardText(const char *pText)
+ {
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++	DDWeb_SetClipboardText(pText);
++#else
+ 	SDL_SetClipboardText(pText);
++#endif
+ }
+ 
+ void CInput::StartTextInput()
+@@ -347,11 +376,17 @@ void CInput::StartTextInput()
+ 	// enable system messages for IME
+ 	SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
+ 	SDL_StartTextInput();
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++	DDWeb_SetTextInputActive(1);
++#endif
+ }
+ 
+ void CInput::StopTextInput()
+ {
+ 	SDL_StopTextInput();
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++	DDWeb_SetTextInputActive(0);
++#endif
+ 	// disable system messages for performance
+ 	SDL_EventState(SDL_SYSWMEVENT, SDL_DISABLE);
+ 	m_CompositionString = "";
+@@ -708,12 +743,41 @@ static int TranslateMouseWheelEventKey(const SDL_MouseWheelEvent &MouseWheelEven
+ #if defined(CONF_PLATFORM_EMSCRIPTEN)
+ extern "C" {
+ 
++// Called from the web shell via Module.ccall: inject committed UTF-8 text or a
++// control key into the SDL event queue.
++void DDWeb_InputText(const char *pText);
++void DDWeb_InputKey(int KeySym, int Pressed);
++
+ // This will be called from Emscripten JS code
+ bool EmscriptenQuit = false;
+ void EmscriptenCallbackQuit()
+ {
+ 	EmscriptenQuit = true;
+ }
++
++void DDWeb_InputText(const char *pText)
++{
++	if(!pText || pText[0] == '\0')
++		return;
++	SDL_Event Event;
++	SDL_zero(Event);
++	Event.type = SDL_TEXTINPUT;
++	str_copy(Event.text.text, pText, sizeof(Event.text.text));
++	SDL_PushEvent(&Event);
++}
++
++void DDWeb_InputKey(int KeySym, int Pressed)
++{
++	SDL_Event Event;
++	SDL_zero(Event);
++	Event.type = Pressed ? SDL_KEYDOWN : SDL_KEYUP;
++	Event.key.type = Event.type;
++	Event.key.state = Pressed ? SDL_PRESSED : SDL_RELEASED;
++	Event.key.repeat = 0;
++	Event.key.keysym.sym = (SDL_Keycode)KeySym;
++	Event.key.keysym.scancode = SDL_GetScancodeFromKey((SDL_Keycode)KeySym);
++	SDL_PushEvent(&Event);
++}
+ }
+ #endif
+ 
+diff --git a/src/engine/shared/websockets.h b/src/engine/shared/websockets.h
+index 3fb1900..c4c9657 100644
+--- a/src/engine/shared/websockets.h
++++ b/src/engine/shared/websockets.h
+@@ -20,6 +20,16 @@ int websocket_recv(int socket, unsigned char *data, size_t maxsize, NETADDR *add
+ int websocket_send(int socket, const unsigned char *data, size_t size, const NETADDR *addr);
+ int websocket_fd_set(int socket, fd_set *set);
+ int websocket_fd_get(int socket, fd_set *set);
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++// Additional interface of the client-side WebSocket transport used by the web build,
++// see websockets_emscripten.cpp. WebSocket URLs are registered here so that the
++// engine can keep using plain NETADDRs for all networking.
++void websocket_set_default_relay(const char *url, const char *query);
++int websocket_addr_from_url(const char *url, NETADDR *addr);
++int websocket_addr_from_plain(const char *host_and_port, NETADDR *addr, bool sixup);
++bool websocket_addr_to_str(const NETADDR *addr, char *buf, int buf_size);
++int websocket_pending(int socket);
++#endif
+ // NOLINTEND(readability-identifier-naming)
+ 
+ #endif // ENGINE_SHARED_WEBSOCKETS_H
+diff --git a/src/engine/shared/websockets_emscripten.cpp b/src/engine/shared/websockets_emscripten.cpp
+new file mode 100644
+index 0000000..bb7dc71
+--- /dev/null
++++ b/src/engine/shared/websockets_emscripten.cpp
+@@ -0,0 +1,732 @@
++#include "websockets.h"
++
++#if defined(CONF_PLATFORM_EMSCRIPTEN)
++
++#include <base/log.h>
++#include <base/mem.h>
++#include <base/net.h>
++#include <base/str.h>
++#include <base/time.h>
++
++#include <emscripten.h>
++
++#include <cstdint>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++// Client-side WebSocket transport for the Emscripten (web browser) build.
++//
++// Browsers cannot open UDP sockets, so the only networking primitive available
++// to the web client is the JavaScript WebSocket API. This file implements the
++// same interface as the server-side libwebsockets based implementation in
++// websockets.cpp, but as a client: every `NETADDR` of type NETTYPE_WEBSOCKET_*
++// is associated with a full WebSocket URL (registered by net_host_lookup) and
++// every "UDP datagram" is mapped to exactly one binary WebSocket frame.
++//
++// The JavaScript side is polled instead of invoking callbacks into WebAssembly,
++// because the game runs on the browser main thread and WebSocket callbacks must
++// not re-enter the engine from arbitrary event loop turns. This keeps the
++// pthread + ASYNCIFY build of the client working without any locking.
++
++// clang-format off
++EM_JS(int, ddws_open, (const char *pUrl), {
++	var g = Module['DDWS'] || (Module['DDWS'] = { slots: [], free: [], mode: { webrtc: 0, ws: 0, fallback: 0 } });
++	if (!Module['DDWSStats']) Module['DDWSStats'] = { bytesIn: 0, bytesOut: 0 };
++	var idx = g.free.length > 0 ? g.free.pop() : g.slots.length;
++	var url = UTF8ToString(pUrl);
++	var rec = { ws: null, dc: null, pc: null, mode: 'pending', inq: [], outq: [], closed: false, opened: false };
++	g.slots[idx] = rec;
++
++	function flush() {
++		while (rec.outq.length > 0 && !rec.closed) {
++			var data = rec.outq.shift();
++			try {
++				if (rec.dc && rec.dc.readyState === 'open') rec.dc.send(data);
++				else if (rec.ws && rec.ws.readyState === 1) rec.ws.send(data);
++				else { rec.outq.unshift(data); return; }
++			} catch (e) { rec.closed = true; return; }
++		}
++	}
++
++	function openWS() {
++		if (rec.closed) return;
++		rec.mode = 'ws';
++		try {
++			var ws = new WebSocket(url);
++			ws.binaryType = 'arraybuffer';
++			rec.ws = ws;
++			ws.onopen = function() {
++				if (rec.mode !== 'ws') return;
++				rec.opened = true;
++				g.mode.ws++;
++				Module['DDWSTransport'] = 'ws';
++				console.info('[ddws] transport=ws url=' + url);
++				flush();
++			};
++			ws.onmessage = function(e) { var arr = new Uint8Array(e.data); Module['DDWSStats'].bytesIn += arr.length; rec.inq.push(arr); };
++			ws.onclose = function() { rec.closed = true; };
++			ws.onerror = function() { rec.closed = true; };
++		} catch (e) { rec.closed = true; }
++	}
++
++	function fallbackToWS(reason) {
++		if (rec.closed || rec.opened || rec.mode === 'ws') return;
++		rec.mode = 'fallback';
++		Module['DDWSTransport'] = 'fallback';
++		g.mode.fallback++;
++		console.warn('[ddws] WebRTC unavailable (' + reason + '), falling back to WebSocket');
++		try { if (rec.dc) rec.dc.close(); } catch (e) {}
++		try { if (rec.pc) rec.pc.close(); } catch (e) {}
++		rec.dc = null;
++		rec.pc = null;
++		openWS();
++	}
++
++	var force = null;
++	try { force = new URL(url).searchParams.get('transport'); } catch (e) { force = null; }
++	var isGameURL = url.indexOf('/udp/') >= 0;
++	var hasRTC = (typeof globalThis.RTCPeerConnection === 'function');
++
++	if (force === 'ws' || !isGameURL || !hasRTC) {
++		openWS();
++		return idx;
++	}
++
++	rec.mode = 'webrtc-connecting';
++	var settled = false;
++	var timer = setTimeout(function() { if (!settled) { settled = true; fallbackToWS('timeout'); } }, 6000);
++
++	try {
++		var u = new URL(url);
++		var path = u.pathname;
++		var udpAt = path.indexOf('/udp/');
++		if (udpAt < 0) { clearTimeout(timer); fallbackToWS('url'); return idx; }
++		var basePath = path.slice(0, udpAt);
++		var target = decodeURIComponent(path.slice(udpAt + 5));
++		if (!target || target.indexOf('/') >= 0) { clearTimeout(timer); fallbackToWS('url'); return idx; }
++		var httpBase = (u.protocol === 'wss:' ? 'https://' : 'http://') + u.host + basePath;
++		var signal = httpBase + '/rtc/offer?target=' + encodeURIComponent(target);
++		var token = u.searchParams.get('token');
++		if (token) signal += '&token=' + encodeURIComponent(token);
++		var iceServers = [];
++		try { if (Array.isArray(globalThis.DDWebIceServers)) iceServers = globalThis.DDWebIceServers; } catch (e) {}
++
++		var pc = new RTCPeerConnection({ iceServers: iceServers });
++		rec.pc = pc;
++		var dc = pc.createDataChannel('game', { ordered: false, maxRetransmits: 0 });
++		rec.dc = dc;
++		dc.binaryType = 'arraybuffer';
++		dc.onopen = function() {
++			if (settled || rec.closed || rec.mode !== 'webrtc-connecting') return;
++			settled = true;
++			clearTimeout(timer);
++			rec.mode = 'webrtc';
++			rec.opened = true;
++			g.mode.webrtc++;
++			Module['DDWSTransport'] = 'webrtc';
++			Module['DDWSTransportTarget'] = target;
++			console.info('[ddws] transport=webrtc target=' + target + ' url=' + url);
++			flush();
++		};
++		dc.onmessage = function(e) { var arr = new Uint8Array(e.data); Module['DDWSStats'].bytesIn += arr.length; rec.inq.push(arr); };
++		dc.onclose = function() { if (rec.mode === 'webrtc') rec.closed = true; };
++		dc.onerror = function() { if (!settled) { settled = true; clearTimeout(timer); fallbackToWS('datachannel-error'); } };
++		pc.onconnectionstatechange = function() {
++			if (pc.connectionState === 'failed' && !settled) { settled = true; clearTimeout(timer); fallbackToWS('ice-failed'); }
++		};
++
++		pc.createOffer().then(function(offer) {
++			return pc.setLocalDescription(offer);
++		}).then(function() {
++			return new Promise(function(resolve) {
++				if (pc.iceGatheringState === 'complete') return resolve();
++				var iceTimer = setTimeout(resolve, 3000);
++				pc.addEventListener('icegatheringstatechange', function() {
++					if (pc.iceGatheringState === 'complete') { clearTimeout(iceTimer); resolve(); }
++				});
++			});
++		}).then(function() {
++			if (settled || rec.closed || !pc.localDescription) return null;
++			return fetch(signal, {
++				method: 'POST',
++				headers: { 'content-type': 'application/json' },
++				body: JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp })
++			});
++		}).then(function(response) {
++			if (!response) return null;
++			if (!response.ok) throw new Error('signaling HTTP ' + response.status);
++			return response.json();
++		}).then(function(answer) {
++			if (!answer || !answer.sdp || settled || rec.closed) return null;
++			return pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
++		}).catch(function(err) {
++			if (!settled) { settled = true; clearTimeout(timer); fallbackToWS(String(err && err.message || err)); }
++		});
++	} catch (e) {
++		clearTimeout(timer);
++		fallbackToWS(String(e && e.message || e));
++	}
++	return idx;
++});
++
++EM_JS(int, ddws_transport, (int slot), {
++	var g = Module['DDWS'];
++	if (!g || !g.slots[slot]) return 0;
++	var mode = g.slots[slot].mode;
++	return mode === 'webrtc' ? 1 : (mode === 'ws' ? 2 : 0);
++});
++
++EM_JS(int, ddws_close, (int slot), {
++	var g = Module['DDWS'];
++	if (!g || !g.slots[slot]) return -1;
++	var rec = g.slots[slot];
++	rec.closed = true;
++	try { if (rec.dc) rec.dc.close(); } catch (e) {}
++	try { if (rec.pc) rec.pc.close(); } catch (e) {}
++	try { if (rec.ws) rec.ws.close(); } catch (e) {}
++	g.slots[slot] = null;
++	g.free.push(slot);
++	return 0;
++});
++
++EM_JS(int, ddws_send, (int slot, const void *pData, int size), {
++	var g = Module['DDWS'];
++	if (!g || !g.slots[slot]) return -1;
++	var rec = g.slots[slot];
++	if (rec.closed) return -1;
++	var copy = new Uint8Array(HEAPU8.subarray(pData, pData + size));
++	if (rec.opened) {
++		if (Module['DDWSStats']) Module['DDWSStats'].bytesOut += copy.length;
++		try {
++			if (rec.dc && rec.dc.readyState === 'open') rec.dc.send(copy);
++			else if (rec.ws && rec.ws.readyState === 1) rec.ws.send(copy);
++			else { rec.outq.push(copy); }
++		} catch (e) { rec.closed = true; return -1; }
++	} else {
++		rec.outq.push(copy);
++	}
++	return size;
++});
++
++EM_JS(int, ddws_poll, (int slot, void *pData, int maxSize), {
++	var g = Module['DDWS'];
++	if (!g || !g.slots[slot]) return -1;
++	var rec = g.slots[slot];
++	if (rec.inq.length === 0) return rec.closed ? -1 : 0;
++	var frame = rec.inq.shift();
++	var n = Math.min(frame.length, maxSize);
++	HEAPU8.set(frame.subarray(0, n), pData);
++	return n;
++});
++
++EM_JS(int, ddws_pending, (int slot), {
++	var g = Module['DDWS'];
++	if (!g || !g.slots[slot]) return 0;
++	return g.slots[slot].inq.length;
++});
++// clang-format on
++
++namespace {
++
++constexpr int MAX_WEBSOCKET_CONTEXTS = 4;
++constexpr int MAX_WEBSOCKET_CONNECTIONS = 32;
++// A relay URL plus path, authentication token and protocol query has to fit.
++constexpr int MAX_WEBSOCKET_URL_LENGTH = 1024;
++
++struct SWebSocketConnection
++{
++	NETADDR m_Addr;
++	int m_Slot = -1;
++	bool m_LoggedTransport = false;
++};
++
++struct SWebSocketContext
++{
++	bool m_Used = false;
++	std::vector<SWebSocketConnection> m_vConnections;
++	// Throttle reopening dead WebSocket slots: the browser closes sockets on relay
++	// idle timeout / network changes, but CNetClient keeps the NETADDR cached. Without
++	// a cooldown a failed send would reopen a socket on every outgoing packet.
++	int64_t m_NextOpenTick = 0;
++};
++
++SWebSocketContext g_aContexts[MAX_WEBSOCKET_CONTEXTS] = {};
++// WebSocket URL by hash of the URL, which is stored in the NETADDR IP field.
++std::unordered_map<uint32_t, std::string> g_UrlByHash;
++// Relay used for plain "host:port" addresses, e.g. "wss://relay.example.com:8443".
++char g_aDefaultRelay[MAX_WEBSOCKET_URL_LENGTH] = "";
++// Optional query string appended to relay URLs, e.g. "token=secret".
++char g_aDefaultRelayQuery[512] = "";
++
++uint32_t HashString(const char *pStr)
++{
++	uint32_t Hash = 2166136261u; // FNV-1a
++	for(const char *p = pStr; *p != '\0'; p++)
++	{
++		Hash ^= (uint8_t)*p;
++		Hash *= 16777619u;
++	}
++	return Hash;
++}
++
++uint32_t AddrHash(const NETADDR *pAddr)
++{
++	uint32_t Hash = 0;
++	mem_copy(&Hash, pAddr->ip, sizeof(Hash));
++	return Hash;
++}
++
++SWebSocketContext *GetContext(int Socket)
++{
++	if(Socket < 0 || Socket >= MAX_WEBSOCKET_CONTEXTS || !g_aContexts[Socket].m_Used)
++	{
++		return nullptr;
++	}
++	return &g_aContexts[Socket];
++}
++
++int ParseWebSocketUrl(const char *pUrl, NETADDR *pAddr)
++{
++	const char *pRest;
++	bool Secure;
++	if(str_startswith_nocase(pUrl, "wss://"))
++	{
++		pRest = pUrl + 6;
++		Secure = true;
++	}
++	else if(str_startswith_nocase(pUrl, "ws://"))
++	{
++		pRest = pUrl + 5;
++		Secure = false;
++	}
++	else
++	{
++		return -1;
++	}
++
++	const int UrlLength = str_length(pUrl);
++	if(UrlLength <= 0 || UrlLength >= MAX_WEBSOCKET_URL_LENGTH)
++	{
++		log_error("websockets", "WebSocket URL has invalid length: %d", UrlLength);
++		return -1;
++	}
++
++	// The authority ends at the first '/', '?' or '#'.
++	const char *pAuthorityEnd = pRest;
++	while(*pAuthorityEnd != '\0' && *pAuthorityEnd != '/' && *pAuthorityEnd != '?' && *pAuthorityEnd != '#')
++	{
++		pAuthorityEnd++;
++	}
++	if(pAuthorityEnd == pRest)
++	{
++		log_error("websockets", "WebSocket URL has no host: '%s'", pUrl);
++		return -1;
++	}
++
++	// Strip optional userinfo.
++	for(const char *p = pRest; p < pAuthorityEnd; p++)
++	{
++		if(*p == '@')
++		{
++			pRest = p + 1;
++			break;
++		}
++	}
++	const char *pAuthority = pRest;
++
++	int Port = Secure ? 443 : 80;
++	if(*pAuthority == '[')
++	{
++		// Bracketed IPv6 address with optional port.
++		const char *pClose = pAuthority;
++		while(pClose < pAuthorityEnd && *pClose != ']')
++		{
++			pClose++;
++		}
++		if(pClose >= pAuthorityEnd)
++		{
++			log_error("websockets", "WebSocket URL has invalid IPv6 address: '%s'", pUrl);
++			return -1;
++		}
++		if(pClose + 1 < pAuthorityEnd)
++		{
++			if(*(pClose + 1) != ':')
++			{
++				log_error("websockets", "WebSocket URL has invalid IPv6 address: '%s'", pUrl);
++				return -1;
++			}
++			int ParsedPort = 0;
++			for(const char *p = pClose + 2; p < pAuthorityEnd; p++)
++			{
++				if(*p < '0' || *p > '9')
++				{
++					return -1;
++				}
++				ParsedPort = ParsedPort * 10 + (*p - '0');
++				if(ParsedPort > 65535)
++				{
++					return -1;
++				}
++			}
++			if(ParsedPort <= 0)
++			{
++				return -1;
++			}
++			Port = ParsedPort;
++		}
++	}
++	else
++	{
++		const char *pColon = nullptr;
++		for(const char *p = pAuthority; p < pAuthorityEnd; p++)
++		{
++			if(*p == ':')
++			{
++				pColon = p;
++			}
++		}
++		if(pColon != nullptr)
++		{
++			int ParsedPort = 0;
++			if(pColon + 1 >= pAuthorityEnd)
++			{
++				return -1;
++			}
++			for(const char *p = pColon + 1; p < pAuthorityEnd; p++)
++			{
++				if(*p < '0' || *p > '9')
++				{
++					log_error("websockets", "WebSocket URL has invalid port: '%s'", pUrl);
++					return -1;
++				}
++				ParsedPort = ParsedPort * 10 + (*p - '0');
++				if(ParsedPort > 65535)
++				{
++					return -1;
++				}
++			}
++			if(ParsedPort <= 0)
++			{
++				return -1;
++			}
++			Port = ParsedPort;
++		}
++	}
++
++	// Optional protocol selection in the query string, e.g.
++	//   wss://relay.example.com/udp/ddnet.example.org:8303?protocol=7
++	// requests the 0.7 (sixup) protocol instead of 0.6.
++	bool Sixup = false;
++	if(const char *pQuery = str_find(pUrl, "?"))
++	{
++		if(str_find(pQuery, "protocol=7") != nullptr ||
++			str_find(pQuery, "protocol=0.7") != nullptr ||
++			str_find(pQuery, "sevenup=1") != nullptr ||
++			str_find(pQuery, "tw7=1") != nullptr)
++		{
++			Sixup = true;
++		}
++	}
++
++	const uint32_t Hash = HashString(pUrl);
++	mem_zero(pAddr, sizeof(*pAddr));
++	mem_copy(pAddr->ip, &Hash, sizeof(Hash));
++	pAddr->port = Port;
++	pAddr->type = NETTYPE_WEBSOCKET_IPV4;
++	if(Sixup)
++	{
++		pAddr->type |= NETTYPE_TW7;
++	}
++
++	auto Existing = g_UrlByHash.find(Hash);
++	if(Existing != g_UrlByHash.end() && Existing->second != pUrl)
++	{
++		log_warn("websockets", "WebSocket URL hash collision between '%s' and '%s'", Existing->second.c_str(), pUrl);
++	}
++	g_UrlByHash[Hash] = pUrl;
++	return 0;
++}
++
++} // namespace
++
++bool websocket_addr_to_str(const NETADDR *pAddr, char *pBuf, int BufSize)
++{
++	const auto It = g_UrlByHash.find(AddrHash(pAddr));
++	if(It == g_UrlByHash.end())
++	{
++		return false;
++	}
++	str_copy(pBuf, It->second.c_str(), BufSize);
++	return true;
++}
++
++int websocket_addr_from_url(const char *pUrl, NETADDR *pAddr)
++{
++	return ParseWebSocketUrl(pUrl, pAddr);
++}
++
++int websocket_addr_from_plain(const char *pHostAndPort, NETADDR *pAddr, bool Sixup)
++{
++	if(g_aDefaultRelay[0] == '\0')
++	{
++		return -1;
++	}
++	// Build the relay URL that carries this plain address, e.g.
++	//   wss://relay.example.com:8443/udp/game.example.org:8303?token=...&protocol=7
++	// The relay is a dumb datagram pipe, so the target is only used to select the
++	// UDP destination. Keeping the protocol in the URL ensures that reconnecting
++	// from the URL (e.g. "try again" or a saved address) keeps the 0.7 flag.
++	char aQuery[sizeof(g_aDefaultRelayQuery) + 32];
++	str_copy(aQuery, g_aDefaultRelayQuery, sizeof(aQuery));
++	if(Sixup)
++	{
++		if(aQuery[0] != '\0')
++		{
++			str_append(aQuery, "&", sizeof(aQuery));
++		}
++		str_append(aQuery, "protocol=7", sizeof(aQuery));
++	}
++	char aUrl[MAX_WEBSOCKET_URL_LENGTH];
++	if(aQuery[0] != '\0')
++	{
++		str_format(aUrl, sizeof(aUrl), "%s/udp/%s?%s", g_aDefaultRelay, pHostAndPort, aQuery);
++	}
++	else
++	{
++		str_format(aUrl, sizeof(aUrl), "%s/udp/%s", g_aDefaultRelay, pHostAndPort);
++	}
++	return ParseWebSocketUrl(aUrl, pAddr);
++}
++
++void websocket_set_default_relay(const char *pUrl, const char *pQuery)
++{
++	str_copy(g_aDefaultRelay, pUrl, sizeof(g_aDefaultRelay));
++	while(str_length(g_aDefaultRelay) > 0 && g_aDefaultRelay[str_length(g_aDefaultRelay) - 1] == '/')
++	{
++		g_aDefaultRelay[str_length(g_aDefaultRelay) - 1] = '\0';
++	}
++	str_copy(g_aDefaultRelayQuery, pQuery != nullptr ? pQuery : "", sizeof(g_aDefaultRelayQuery));
++	const char *pQueryStart = g_aDefaultRelayQuery;
++	while(*pQueryStart == '?' || *pQueryStart == '&')
++	{
++		pQueryStart++;
++	}
++	if(pQueryStart != g_aDefaultRelayQuery)
++	{
++		mem_move(g_aDefaultRelayQuery, pQueryStart, str_length(pQueryStart) + 1);
++	}
++	// Trailing separators would produce "...?token=x&", which relays tolerate, but
++	// keeping the URL canonical makes the address hash stable.
++	while(str_length(g_aDefaultRelayQuery) > 0 && (g_aDefaultRelayQuery[str_length(g_aDefaultRelayQuery) - 1] == '&' || g_aDefaultRelayQuery[str_length(g_aDefaultRelayQuery) - 1] == '?'))
++	{
++		g_aDefaultRelayQuery[str_length(g_aDefaultRelayQuery) - 1] = '\0';
++	}
++}
++
++void websocket_init()
++{
++}
++
++int websocket_create(const NETADDR *pBindAddr)
++{
++	(void)pBindAddr;
++	for(int i = 0; i < MAX_WEBSOCKET_CONTEXTS; i++)
++	{
++		if(!g_aContexts[i].m_Used)
++		{
++			g_aContexts[i].m_vConnections.clear();
++			g_aContexts[i].m_Used = true;
++			return i;
++		}
++	}
++	log_error("websockets", "no free WebSocket context available");
++	return -1;
++}
++
++void websocket_destroy(int Socket)
++{
++	SWebSocketContext *pContext = GetContext(Socket);
++	if(pContext == nullptr)
++	{
++		return;
++	}
++	for(const SWebSocketConnection &Connection : pContext->m_vConnections)
++	{
++		ddws_close(Connection.m_Slot);
++	}
++	pContext->m_vConnections.clear();
++	pContext->m_Used = false;
++}
++
++int websocket_send(int Socket, const unsigned char *pData, size_t Size, const NETADDR *pAddr)
++{
++	SWebSocketContext *pContext = GetContext(Socket);
++	if(pContext == nullptr || Size == 0)
++	{
++		return -1;
++	}
++
++	SWebSocketConnection *pConnection = nullptr;
++	int ConnectionIndex = -1;
++	for(int i = 0; i < (int)pContext->m_vConnections.size(); i++)
++	{
++		if(net_addr_comp(&pContext->m_vConnections[i].m_Addr, pAddr) == 0)
++		{
++			pConnection = &pContext->m_vConnections[i];
++			ConnectionIndex = i;
++			break;
++		}
++	}
++
++	if(pConnection == nullptr)
++	{
++		// A slot failed recently; give it a moment instead of reconnecting in a busy loop.
++		if(time_get() < pContext->m_NextOpenTick)
++		{
++			return -1;
++		}
++		char aUrl[MAX_WEBSOCKET_URL_LENGTH];
++		if(!websocket_addr_to_str(pAddr, aUrl, sizeof(aUrl)))
++		{
++			log_error("websockets", "no WebSocket URL registered for this address, the web client can only use ws:// and wss:// addresses");
++			return -1;
++		}
++		if((int)pContext->m_vConnections.size() >= MAX_WEBSOCKET_CONNECTIONS)
++		{
++			log_error("websockets", "too many WebSocket connections, rejecting '%s'", aUrl);
++			return -1;
++		}
++		const int Slot = ddws_open(aUrl);
++		if(Slot < 0)
++		{
++			log_error("websockets", "failed to open WebSocket connection to '%s'", aUrl);
++			return -1;
++		}
++		pContext->m_vConnections.push_back(SWebSocketConnection{*pAddr, Slot});
++		pConnection = &pContext->m_vConnections.back();
++		ConnectionIndex = (int)pContext->m_vConnections.size() - 1;
++		log_info("websockets", "opened WebSocket connection to '%s'", aUrl);
++	}
++
++	if(ddws_send(pConnection->m_Slot, pData, (int)Size) < 0)
++	{
++		char aUrl[MAX_WEBSOCKET_URL_LENGTH];
++		if(websocket_addr_to_str(pAddr, aUrl, sizeof(aUrl)))
++		{
++			log_warn("websockets", "sending to '%s' failed, reopening on the next attempt", aUrl);
++		}
++		// The browser socket is gone (relay idle timeout, network switch, ...).
++		// Drop it so that a later send opens a fresh connection; the cooldown avoids
++		// opening one socket per outgoing packet while the target stays unreachable.
++		ddws_close(pConnection->m_Slot);
++		pContext->m_vConnections.erase(pContext->m_vConnections.begin() + ConnectionIndex);
++		pContext->m_NextOpenTick = time_get() + time_freq();
++		return -1;
++	}
++	if(!pConnection->m_LoggedTransport)
++	{
++		const int Transport = ddws_transport(pConnection->m_Slot);
++		if(Transport == 1 || Transport == 2)
++		{
++			pConnection->m_LoggedTransport = true;
++			char aUrl[MAX_WEBSOCKET_URL_LENGTH];
++			if(websocket_addr_to_str(pAddr, aUrl, sizeof(aUrl)))
++			{
++				log_info("websockets", "transport for '%s': %s", aUrl,
++					Transport == 1 ? "WebRTC data channel (preferred)" : "WebSocket (fallback)");
++			}
++		}
++	}
++	return (int)Size;
++}
++
++int websocket_recv(int Socket, unsigned char *pData, size_t MaxSize, NETADDR *pAddr)
++{
++	SWebSocketContext *pContext = GetContext(Socket);
++	if(pContext == nullptr)
++	{
++		return 0;
++	}
++
++	int Index = 0;
++	while(Index < (int)pContext->m_vConnections.size())
++	{
++		SWebSocketConnection &Connection = pContext->m_vConnections[Index];
++		const int Bytes = ddws_poll(Connection.m_Slot, pData, (int)MaxSize);
++		if(Bytes > 0)
++		{
++			*pAddr = Connection.m_Addr;
++			return Bytes;
++		}
++		if(Bytes < 0)
++		{
++			char aUrl[MAX_WEBSOCKET_URL_LENGTH];
++			if(websocket_addr_to_str(&Connection.m_Addr, aUrl, sizeof(aUrl)))
++			{
++				log_warn("websockets", "WebSocket connection to '%s' was closed", aUrl);
++			}
++			ddws_close(Connection.m_Slot);
++			pContext->m_vConnections.erase(pContext->m_vConnections.begin() + Index);
++			continue;
++		}
++		Index++;
++	}
++	return 0;
++}
++
++int websocket_pending(int Socket)
++{
++	SWebSocketContext *pContext = GetContext(Socket);
++	if(pContext == nullptr)
++	{
++		return 0;
++	}
++	for(const SWebSocketConnection &Connection : pContext->m_vConnections)
++	{
++		if(ddws_pending(Connection.m_Slot) > 0)
++		{
++			return 1;
++		}
++	}
++	return 0;
++}
++
++int websocket_fd_set(int Socket, fd_set *pSet)
++{
++	(void)Socket;
++	(void)pSet;
++	return -1;
++}
++
++int websocket_fd_get(int Socket, fd_set *pSet)
++{
++	(void)Socket;
++	(void)pSet;
++	return 0;
++}
++
++// Called from the web frontend before starting the client to configure a relay that
++// is used for plain "host:port" server addresses (e.g. servers picked in the
++// in-game server browser, whose addresses come from the UDP master server list).
++// pQuery is an optional already URL-encoded query string, e.g. "token=secret".
++EM_JS(void, DDWeb_SetClipboardText, (const char *pText), {
++	const text = UTF8ToString(pText);
++	if (typeof globalThis.ddwebSetClipboardText === "function") {
++		globalThis.ddwebSetClipboardText(text);
++	}
++});
++
++EM_JS(void, DDWeb_SetTextInputActive, (int Active), {
++	if (typeof globalThis.ddwebTextInputActive === "function") {
++		globalThis.ddwebTextInputActive(Active ? true : false);
++	}
++});
++
++extern "C" EMSCRIPTEN_KEEPALIVE void DDWeb_SetDefaultRelay(const char *pUrl, const char *pQuery)
++{
++	websocket_set_default_relay(pUrl, pQuery);
++	log_info("websockets", "default relay for plain server addresses: '%s' (query %s)", g_aDefaultRelay, g_aDefaultRelayQuery[0] != '\0' ? "set" : "empty");
++}
++
++#endif
+diff --git a/src/game/client/ui.cpp b/src/game/client/ui.cpp
+index 6c61251..6857773 100644
+--- a/src/game/client/ui.cpp
++++ b/src/game/client/ui.cpp
+@@ -236,6 +236,25 @@ void CUi::Update()
+ 		}
+ 	}
+ 
++	if(m_HasMouseTarget)
++	{
++		vec2 Target = m_MouseTargetNormalized * WindowSize;
++		Target.x = std::clamp(Target.x, 0.0f, WindowSize.x - 1.0f);
++		Target.y = std::clamp(Target.y, 0.0f, WindowSize.y - 1.0f);
++		const vec2 Delta = Target - m_UpdatedMousePos;
++		// 相邻/很接近的位置直接写坐标，避免无意义的插值延迟；
++		// 只有跨度较大时才做 lerp。
++		if(length(Delta) < 4.0f)
++		{
++			m_UpdatedMousePos = Target;
++			m_HasMouseTarget = false;
++		}
++		else
++		{
++			m_UpdatedMousePos += Delta * 0.4f;
++		}
++	}
++
+ 	m_MousePos = m_UpdatedMousePos * vec2(pScreen->w, pScreen->h) / WindowSize;
+ 	m_MouseDelta = m_UpdatedMouseDelta;
+ 	m_UpdatedMouseDelta = vec2(0.0f, 0.0f);
+diff --git a/src/game/client/ui.h b/src/game/client/ui.h
+index 7983130..de9d6d4 100644
+--- a/src/game/client/ui.h
++++ b/src/game/client/ui.h
+@@ -437,6 +437,8 @@ private:
+ 	CValueSelectorState m_ActiveValueSelectorState;
+ 
+ 	vec2 m_UpdatedMousePos = vec2(0.0f, 0.0f); // in window screen space
++	vec2 m_MouseTargetNormalized = vec2(0.0f, 0.0f);
++	bool m_HasMouseTarget = false;
+ 	vec2 m_UpdatedMouseDelta = vec2(0.0f, 0.0f); // in window screen space
+ 	vec2 m_MousePos = vec2(0.0f, 0.0f); // in gui space
+ 	vec2 m_MouseDelta = vec2(0.0f, 0.0f); // in gui space
+@@ -548,6 +550,12 @@ public:
+ 	void Update();
+ 	void DebugRender(float X, float Y);
+ 
++	void SetMouseTargetNormalized(vec2 Pos)
++	{
++		m_MouseTargetNormalized = vec2(std::clamp(Pos.x, 0.0f, 1.0f), std::clamp(Pos.y, 0.0f, 1.0f));
++		m_HasMouseTarget = true;
++	}
++
+ 	vec2 MousePos() const { return m_MousePos; }
+ 	float MouseX() const { return m_MousePos.x; }
+ 	float MouseY() const { return m_MousePos.y; }
