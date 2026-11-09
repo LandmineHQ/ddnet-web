@@ -16,7 +16,7 @@ on:
       also_latest:
         description: "同时推送 :latest"
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
