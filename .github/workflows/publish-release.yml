@@ -128,6 +128,43 @@ jobs:
           EOF
           cat release-body.md
 
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.run.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          # The release assets were downloaded/packaged before this checkout;
+          # do not let git clean remove untracked assets/out.
+          clean: false
+          token: ${{ github.token }}
+
+      - name: Checkout release commit and ensure tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RUN_SHA: ${{ steps.run.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Do not use `gh release create --target`: when the target commit's
+          # .github/workflows differs from the default branch, GitHub requires
+          # workflows:write, which GITHUB_TOKEN cannot obtain. Push the tag via
+          # git instead, then create the release from that existing tag.
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            tag_sha=$(git rev-parse "${VERSION}^{commit}")
+          else
+            git tag "${VERSION}" "${RUN_SHA}"
+            git push origin "refs/tags/${VERSION}"
+            tag_sha="${RUN_SHA}"
+          fi
+          if [ "${tag_sha}" != "${RUN_SHA}" ]; then
+            echo "::error::tag ${VERSION} points to ${tag_sha}, expected ${RUN_SHA}"
+            exit 1
+          fi
+          echo "tag ${VERSION} -> ${tag_sha}"
+
       - name: Create or update release
         shell: bash
         env:
@@ -138,23 +175,36 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
           DRAFT: ${{ inputs.draft }}
         run: |
-          set -euxo pipefail
-          if gh release view "$VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
-            gh release upload "$VERSION" assets/out/* --clobber --repo "$GH_REPO"
-            gh release edit "$VERSION" --notes-file release-body.md --repo "$GH_REPO"
-            echo "Existing release updated."
-          else
-            args=(--repo "$GH_REPO" --title "$VERSION" --notes-file release-body.md)
-            # 如果 tag 已存在，使用 --verify-tag；否则把 release 指向本次 build 的 commit。
-            if gh api "repos/${GH_REPO}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
-              args+=(--verify-tag)
+          set -uo pipefail
+          # The tag was pushed in the previous step. Create the release from
+          # that existing tag (no --target), so GitHub does not require the
+          # workflows:write permission for a commit whose workflow files differ
+          # from the default branch.
+          for attempt in 1 2 3 4; do
+            echo "release attempt $attempt/4"
+            if gh release view "$VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
+              if gh release upload "$VERSION" assets/out/* --clobber --repo "$GH_REPO" \
+                && gh release edit "$VERSION" --notes-file release-body.md --repo "$GH_REPO"; then
+                echo "Existing release updated."
+                exit 0
+              fi
             else
-              args+=(--target "$RUN_SHA")
+              args=(--repo "$GH_REPO" --title "$VERSION" --notes-file release-body.md --verify-tag)
+              [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
+              [[ "$DRAFT" == "true" ]] && args+=(--draft)
+              if gh release create "$VERSION" "${args[@]}"; then
+                if gh release upload "$VERSION" assets/out/* --clobber --repo "$GH_REPO"; then
+                  echo "Release created."
+                  exit 0
+                fi
+              fi
             fi
-            [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
-            [[ "$DRAFT" == "true" ]] && args+=(--draft)
-            gh release create "$VERSION" "${args[@]}" assets/out/*
-          fi
+            if [[ "$attempt" -lt 4 ]]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "::error title=Release failed::gh release create/upload failed after retries. Check Contents: write and tag permissions."
+          exit 1
 
       - name: Summary
         shell: bash

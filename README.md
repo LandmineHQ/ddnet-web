@@ -481,6 +481,10 @@ relay-master-linux-amd64
 ddnet-web-dist.tar.gz
 ```
 
+Release tag 指向指定 build run 的 `head_sha`：workflow 先用 `git push` 推送 tag，再用
+`gh release create --verify-tag` 创建 Release，不使用 `--target`。这样即使目标提交与默认分支的
+`.github/workflows/` 不同，也不会要求 `GITHUB_TOKEN` 无法获得的 `workflows: write`。
+
 获取 build run id：
 
 ```bash
