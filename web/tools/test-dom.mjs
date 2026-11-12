@@ -462,6 +462,7 @@ await test('进入游戏：启动参数、HUD、聚光灯、Ctrl+`', async () =>
   assert.equal(get('canvas').style.display, 'block');
   assert.equal(get('hud-panel').hidden, false);
   assert.equal(get('spotlight').hidden, false);
+  assert.equal(document.body.classList.contains('has-spotlight'), true);
   assert.match(get('spotlight-title').textContent, /后端连接信息/);
   assert.equal(get('hud-target').textContent.indexOf('10.0.0.1:8303') >= 0, true);
   assert.equal(get('hud-protocol').textContent, '0.7');
@@ -475,6 +476,7 @@ await test('进入游戏：启动参数、HUD、聚光灯、Ctrl+`', async () =>
 
   click(get('btn-spotlight-next'));
   assert.equal(get('spotlight').hidden, true);
+  assert.equal(document.body.classList.contains('has-spotlight'), false);
   assert.equal(storage.getItem('ddweb.tour.v1'), 'done');
 
   shim.document.dispatchEvent({ type: 'keydown', ctrlKey: true, code: 'Backquote', key: '`', preventDefault() {}, stopPropagation() {} });

@@ -259,7 +259,7 @@ const S = {
   loopPaused: false,
   confirmResolve: null,
   hud: { visible: false, timer: null, busy: false, relay: null, target: null, serverName: '' },
-  spot: { tour: null, started: false },
+  spot: { tour: null, started: false, observer: null },
   runtime: null,
   runtimeExited: false,
   measuring: false,
@@ -506,18 +506,33 @@ function bindEvents() {
     S.pointerLocked = locked;
     document.body.classList.toggle('is-pointer-locked', locked);
     if (S.view === 'game') {
-      if (S.device && S.device.kind === 'desktop') setMenuOpen(!locked);
+      const tourActive = isTourActive();
+      if (tourActive) {
+        // The first-run tour is a DOM panel: keep the browser cursor and
+        // pointer input available to it instead of capturing the mouse for wasm.
+        setMenuOpen(false);
+        setWasmAbsoluteMouse(true);
+        if (locked && typeof document.exitPointerLock === 'function') {
+          try { document.exitPointerLock(); } catch (error) { /* 忽略 */ }
+        }
+        setTimeout(() => scheduleUiMouseSync(), 30);
+      } else {
+        if (S.device && S.device.kind === 'desktop') setMenuOpen(!locked);
+        setWasmAbsoluteMouse(!locked);
+        if (locked) setUiMouseTarget(null);
+        if (!locked) setTimeout(() => scheduleUiMouseSync(), 30);
+      }
       // ESC 会由浏览器强制解除 Pointer Lock；把键盘焦点留在画布上，
       // 避免焦点落到 HUD/按钮后键盘输入与渲染节奏异常。
       try { R.canvas.focus({ preventScroll: true }); } catch (error) { /* 忽略 */ }
-      setWasmAbsoluteMouse(!locked);
-      if (locked) setUiMouseTarget(null);
-      if (!locked) setTimeout(() => scheduleUiMouseSync(), 30);
       log(locked ? '鼠标已捕获（游戏内光标由 DDNet 绘制）' : '鼠标已释放（ESC 菜单打开，游戏内光标接管）');
     }
   });
   document.addEventListener('pointerlockerror', () => {
     log('浏览器拒绝捕获鼠标（需要用户点击画布）', 'warn');
+  });
+  window.addEventListener('resize', () => {
+    if (isTourActive()) positionSpotlight(S.spot.tour.current());
   });
   window.addEventListener('keydown', (event) => {
     // 按住 Tab/ESC 时浏览器会以系统重复率不断发 keydown。DDNet 的
@@ -552,20 +567,8 @@ function bindEvents() {
     }
   }, true);
   R.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
-  // 浏览器在 ESC 时会强制释放 Pointer Lock（无法拦截）。游戏内再次点击画布时恢复捕获；
-  // 菜单/游戏内光标由 DDNet 自己绘制，因此不会出现浏览器光标。
-  function requestGamePointerLock() {
-    if (S.view !== 'game' || document.pointerLockElement === R.canvas) return;
-    try {
-      const request = R.canvas.requestPointerLock && R.canvas.requestPointerLock();
-      if (request && typeof request.catch === 'function') request.catch(() => {});
-    } catch (error) {
-      // 浏览器可能要求用户手势；忽略，下次点击再试
-    }
-  }
-
   R.canvas.addEventListener('click', () => {
-    if (S.view !== 'game' || document.pointerLockElement === R.canvas) return;
+    if (S.view !== 'game' || document.pointerLockElement === R.canvas || isTourActive()) return;
     if (!S.menuOpen) {
       requestGamePointerLock();
       return;
@@ -1987,6 +1990,10 @@ function startMenuPoll() {
   if (S.menuTimer) return;
   S.menuTimer = setInterval(() => {
     if (S.view !== 'game') return;
+    if (isTourActive()) {
+      setMenuOpen(false);
+      return;
+    }
     const isDesktop = S.device && S.device.kind === 'desktop';
     if (!isDesktop) {
       setMenuOpen(false);
@@ -2048,6 +2055,60 @@ function setUiMouseTarget(target) {
   const Module = S.runtime && S.runtime.Module;
   if (!Module) return;
   Module.DDWebUiMouseTarget = target ? [target[0], target[1]] : null;
+}
+
+function isTourActive() {
+  return Boolean(S.spot.tour && S.spot.tour.active);
+}
+
+function requestGamePointerLock() {
+  if (S.view !== 'game' || document.pointerLockElement === R.canvas || isTourActive()) return false;
+  try {
+    const request = R.canvas.requestPointerLock && R.canvas.requestPointerLock();
+    if (request && typeof request.catch === 'function') request.catch(() => {});
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function releasePointerLockForTour() {
+  if (document.pointerLockElement && typeof document.exitPointerLock === 'function') {
+    try {
+      document.exitPointerLock();
+    } catch (error) {
+      // 忽略
+    }
+  }
+  setMenuOpen(false);
+  setWasmAbsoluteMouse(true);
+  setUiMouseTarget(null);
+}
+
+function observeSpotlightTarget() {
+  stopSpotlightObserver();
+  if (typeof ResizeObserver !== 'function') return;
+  const target = document.getElementById('hud-panel');
+  if (!target) return;
+  try {
+    S.spot.observer = new ResizeObserver(() => {
+      if (!isTourActive()) return;
+      positionSpotlight(S.spot.tour.current());
+    });
+    S.spot.observer.observe(target);
+  } catch (error) {
+    S.spot.observer = null;
+  }
+}
+
+function stopSpotlightObserver() {
+  if (!S.spot.observer) return;
+  try {
+    S.spot.observer.disconnect();
+  } catch (error) {
+    // 忽略
+  }
+  S.spot.observer = null;
 }
 
 function scheduleUiMouseSync() {
@@ -2233,8 +2294,14 @@ function maybeStartSpotlight() {
   if (readTourDone(S.storage)) return;
   S.spot.started = true;
   if (!S.spot.tour || !S.spot.tour.start()) return;
+  // The tour is a DOM overlay. Release any pointer lock captured by the
+  // wasm/SDL startup so the browser cursor can reach the panel.
+  releasePointerLockForTour();
+  document.body.classList.add('has-spotlight');
   setTimeout(() => {
+    if (!isTourActive()) return;
     toggleHud(true);
+    setMenuOpen(false);
     renderSpotlight();
   }, 500);
 }
@@ -2246,19 +2313,37 @@ function renderSpotlight() {
     return;
   }
   setHidden(R.spotlight, false);
+  document.body.classList.add('has-spotlight');
   const step = tour.current();
   setText(R.spotlightStep, '引导 ' + (tour.index + 1) + ' / ' + tour.total);
   setText(R.spotlightTitle, step.title);
   setText(R.spotlightText, step.text);
   setText(R.btnSpotlightNext, tour.isLast() ? '开始游戏' : '下一步');
-  positionSpotlight(step);
+  observeSpotlightTarget();
+  positionSpotlight(step, 0);
+  // Measure again after the HUD slide-in animation and async HUD rows settle.
+  const reposition = () => {
+    if (isTourActive()) positionSpotlight(tour.current());
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(reposition));
+  } else {
+    setTimeout(reposition, 32);
+  }
 }
 
-function positionSpotlight(step) {
+function positionSpotlight(step, attempt = 0) {
   const target = step && step.target ? document.getElementById(step.target) : null;
-  const rect = target && typeof target.getBoundingClientRect === 'function'
+  const measured = target && typeof target.getBoundingClientRect === 'function'
     ? target.getBoundingClientRect()
-    : { left: 16, top: 16, width: 280, height: 160, right: 296, bottom: 176 };
+    : null;
+  // During the first frame after a view change the HUD can still be hidden
+  // (or inside a menu-locked layout), so retry instead of drawing a hole at 0,0.
+  if (target && (!measured || measured.width <= 0 || measured.height <= 0) && attempt < 10) {
+    setTimeout(() => positionSpotlight(step, attempt + 1), 16);
+    return;
+  }
+  const rect = measured || { left: 16, top: 16, width: 280, height: 160, right: 296, bottom: 176 };
   const width = window.innerWidth || 1280;
   const height = window.innerHeight || 800;
   const pad = 8;
@@ -2283,8 +2368,8 @@ function positionSpotlight(step) {
   setBox(shades.left, 0, holeTop, holeLeft, holeBottom - holeTop);
   setBox(shades.right, holeRight, holeTop, width - holeRight, holeBottom - holeTop);
 
-  const cardWidth = 300;
-  const cardHeight = 190;
+  const cardWidth = (R.spotlightCard && R.spotlightCard.offsetWidth) || 300;
+  const cardHeight = (R.spotlightCard && R.spotlightCard.offsetHeight) || 190;
   const spaceRight = width - (rect.left + rect.width + 20);
   if (spaceRight >= cardWidth + 12) {
     R.spotlightCard.style.left = (rect.left + rect.width + 20) + 'px';
@@ -2310,7 +2395,13 @@ function advanceSpotlight() {
 function finishSpotlight() {
   if (S.spot.tour) S.spot.tour.finish();
   setHidden(R.spotlight, true);
+  document.body.classList.remove('has-spotlight');
+  stopSpotlightObserver();
   markTourDone(S.storage);
+  setMenuOpen(false);
+  const locked = requestGamePointerLock();
+  setWasmAbsoluteMouse(!locked);
+  if (locked) setUiMouseTarget(null);
   toast('引导已结束；按 ' + HUD_SHORTCUT_HINT + ' 可随时显示后端连接信息', 'info');
 }
 

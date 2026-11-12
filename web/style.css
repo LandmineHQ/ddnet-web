@@ -1183,6 +1183,16 @@ body.in-game .touch-hint {
 }
 
 
+/* 首次聚光灯引导期间由浏览器光标操作 DOM 面板，不能让 wasm 捕获鼠标。 */
+body.has-spotlight #canvas { cursor: default; }
+/* Measure the HUD after it is already in its final position; the slide-in
+   transform otherwise makes the highlight lag 14px behind the panel. */
+body.has-spotlight .hud-panel { animation: none !important; }
+html[data-device='desktop'] body.is-menu-open.has-spotlight .hud-panel,
+html[data-device='desktop'] body.is-menu-open.has-spotlight .spotlight {
+  display: block !important;
+}
+
 /* 计分板/ESC 菜单打开时隐藏网页侧浮层，避免浏览器在菜单上额外合成 HUD/引导。 */
 body.is-scoreboard-open .hud-panel,
 html[data-device='desktop'] body.is-menu-open .hud-panel,
