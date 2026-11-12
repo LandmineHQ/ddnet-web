@@ -151,6 +151,7 @@ https://<master>/v1/signal/<id>/rtc/offer
 | `POST` | `/v1/signal/<id>/rtc/offer` | 转发 WebRTC offer/answer |
 | `GET` | `/v1/signal/<id>/healthz` | relay 健康检查 |
 | `GET` | `/v1/signal/<id>/api/info` | relay ICE/info |
+| `GET` | `/v1/signal/<id>/api/servers` | relay 推荐服务器列表 |
 
 限制：
 

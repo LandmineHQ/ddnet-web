@@ -35,7 +35,10 @@ export function normalizeRelayBase(input) {
     return { ok: false, error: '端口号无效' };
   }
 
-  const path = url.pathname.replace(/\/+$/, '');
+  let path = url.pathname.replace(/\/+$/, '');
+  // A signal URL such as https://host/v1/signal/<id>/rtc/offer is not a relay
+  // base; normalize it before appending /api/* or /udp.
+  path = path.replace(/\/rtc\/offer$/i, '').replace(/\/+$/, '');
   const authority = url.host;
   const base = scheme + '//' + authority + path;
   const httpScheme = scheme === 'wss:' ? 'https:' : 'http:';

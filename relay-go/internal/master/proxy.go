@@ -112,6 +112,9 @@ func (h *Handler) handleSignalProxy(w http.ResponseWriter, r *http.Request) {
 	case "api/info":
 		method = http.MethodGet
 		upstreamPath = strings.TrimSuffix(signalURL.Path, "/rtc/offer") + "/api/info"
+	case "api/servers":
+		method = http.MethodGet
+		upstreamPath = strings.TrimSuffix(signalURL.Path, "/rtc/offer") + "/api/servers"
 	default:
 		h.writeError(w, http.StatusNotFound, "not found")
 		return

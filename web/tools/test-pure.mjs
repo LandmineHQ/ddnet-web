@@ -178,6 +178,8 @@ await test('normalizeRelayBase 与地址显示', () => {
   assert.equal(local.base, 'ws://127.0.0.1:8390');
   assert.equal(local.httpBase, 'http://127.0.0.1:8390');
   assert.equal(normalizeRelayBase('ftp://x').ok, false);
+  assert.equal(normalizeRelayBase('https://master.example.com/v1/signal/abc/rtc/offer').base, 'wss://master.example.com/v1/signal/abc');
+  assert.equal(normalizeRelayBase('https://master.example.com/v1/signal/abc/rtc/offer/').base, 'wss://master.example.com/v1/signal/abc');
   assert.equal(relayAddressLabel('ws://127.0.0.1:8390'), '127.0.0.1:8390');
 });
 

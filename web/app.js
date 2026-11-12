@@ -256,6 +256,7 @@ const S = {
   pointerLocked: false,
   menuOpen: false,
   menuTimer: null,
+  loopPaused: false,
   confirmResolve: null,
   hud: { visible: false, timer: null, busy: false, relay: null, target: null, serverName: '' },
   spot: { tour: null, started: false },
@@ -496,6 +497,10 @@ function bindEvents() {
   });
   // 全局快捷键：在 document 捕获阶段监听（指针锁定 / 输入框内同样生效）。
   // 只有匹配 Ctrl+` 时才 preventDefault，其余按键原样交给页面与 wasm。
+  document.addEventListener('visibilitychange', syncWasmLoopActivity);
+  window.addEventListener('focus', syncWasmLoopActivity);
+  window.addEventListener('blur', syncWasmLoopActivity);
+
   document.addEventListener('pointerlockchange', () => {
     const locked = document.pointerLockElement === R.canvas;
     S.pointerLocked = locked;
@@ -2017,6 +2022,28 @@ function setWasmAbsoluteMouse(absolute) {
   Module.DDWebAbsoluteMouse = absolute === true;
 }
 
+function syncWasmLoopActivity() {
+  if (S.view !== 'game') return;
+  const Module = S.runtime && S.runtime.Module;
+  if (!Module) return;
+  const shouldRun = !document.hidden && document.hasFocus();
+  if (!shouldRun && !S.loopPaused && typeof Module.pauseMainLoop === 'function') {
+    try {
+      Module.pauseMainLoop();
+      S.loopPaused = true;
+    } catch (error) {
+      // 忽略：旧 runtime 不支持主循环暂停
+    }
+  } else if (shouldRun && S.loopPaused && typeof Module.resumeMainLoop === 'function') {
+    try {
+      Module.resumeMainLoop();
+      S.loopPaused = false;
+    } catch (error) {
+      // 忽略
+    }
+  }
+}
+
 function setUiMouseTarget(target) {
   const Module = S.runtime && S.runtime.Module;
   if (!Module) return;
@@ -2056,6 +2083,7 @@ function setView(name) {
   R.canvas.style.display = inGame ? 'block' : 'none';
   if (inGame) {
     startMenuPoll();
+    setTimeout(syncWasmLoopActivity, 0);
     setMenuOpen(document.pointerLockElement !== R.canvas);
     setWasmAbsoluteMouse(document.pointerLockElement !== R.canvas);
     try {
@@ -2066,6 +2094,13 @@ function setView(name) {
   } else {
     stopMenuPoll();
     setWasmAbsoluteMouse(false);
+    if (S.loopPaused) {
+      S.loopPaused = false;
+      const Module = S.runtime && S.runtime.Module;
+      if (Module && typeof Module.resumeMainLoop === 'function') {
+        try { Module.resumeMainLoop(); } catch (error) { /* 忽略 */ }
+      }
+    }
   }
   updateTouchUi();
 }
